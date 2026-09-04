@@ -43,7 +43,9 @@ def read_bpmn(bpmn_path: str | Path) -> Dict[str, Any]:
     """Pull the few things the simulation config needs out of the BPMN.
 
     Returns the process id, the gateway element types (so each gateway gets the
-    right Scylla tag) and the start event ids.
+    right Scylla tag), the start event ids, and the task names -- the model and
+    Scylla's event log identify an activity differently, by id and by name, so
+    comparing them needs the mapping.
     """
     root = ET.parse(str(bpmn_path)).getroot()
     process = root.find(_b("process"))
@@ -60,10 +62,17 @@ def read_bpmn(bpmn_path: str | Path) -> Dict[str, Any]:
     if not start_events:
         raise ValueError(f"no <startEvent> in {bpmn_path}")
 
+    task_names: Dict[str, str] = {}
+    for tag in ("task", "userTask", "serviceTask", "manualTask", "scriptTask",
+                "sendTask", "receiveTask", "businessRuleTask"):
+        for el in process.findall(_b(tag)):
+            task_names[el.get("id")] = el.get("name")
+
     return {
         "process_id": process.get("id"),
         "gateway_types": gateway_types,
         "start_events": start_events,
+        "task_names": task_names,
     }
 
 
@@ -119,6 +128,7 @@ def build_sim_config(
     weighted: bool = False,
     arrival_calendar: bool = True,
     resource_durations: bool = True,
+    eligibility: bool = True,
 ) -> ET.Element:
     """Build the definitions/simulationConfiguration tree.
 
@@ -141,7 +151,8 @@ def build_sim_config(
     })
 
     for task in model["task_resource_distribution"]:
-        _append_task(sim, task, rng, buckets, n_draws, weighted, resource_durations)
+        _append_task(sim, task, rng, buckets, n_draws, weighted,
+                     resource_durations, eligibility)
 
     for gateway in model.get("gateway_branching_probabilities", []):
         _append_gateway(sim, gateway, bpmn["gateway_types"])
@@ -156,7 +167,7 @@ def build_sim_config(
 
 
 def _append_task(parent, task, rng, buckets, n_draws, weighted,
-                 resource_durations=True) -> ET.Element:
+                 resource_durations=True, eligibility=True) -> ET.Element:
     el = ET.SubElement(parent, _q("task"), id=task["task_id"])
 
     # Pooled duration, kept as the fallback: a Scylla build without the
@@ -178,6 +189,18 @@ def _append_task(parent, task, rng, buckets, n_draws, weighted,
                 "timeUnit": D.TIME_UNIT,
             })
             D.append_distribution(item, res, rng, buckets, n_draws)
+
+    # Which resources may perform this activity. The shared pool below holds
+    # every resource, so without this each activity could draw on all of them --
+    # measured on BPIC 2012, that removes nearly all queueing (mean waiting time
+    # 422 s against Prosimos's 3914 s). The resources are listed individually
+    # rather than by group because the model's capability groups overlap.
+    if eligibility:
+        eligible = ET.SubElement(el, _q("eligibleResources"))
+        for res in task["resources"]:
+            ET.SubElement(eligible, _q("eligibleResource"), {
+                "resourceId": res["resource_id"],
+            })
 
     # One unit of the single shared pool. amount="1" means "any one resource",
     # which is the alternative-resource semantics Prosimos has and Scylla's
@@ -260,6 +283,31 @@ def validate_sim_config(root: ET.Element, model: Dict[str, Any],
         if duration.get("timeUnit") is None:
             # A missing timeUnit is an NPE inside Scylla, not a clean error.
             raise ValueError(f"task {el.get('id')} duration has no timeUnit")
+
+    # An eligibility list that lost entries would silently narrow the resources
+    # an activity can use, which looks like a plausible result rather than a bug.
+    expected_eligible = {
+        t["task_id"]: {r["resource_id"] for r in t["resources"]}
+        for t in model["task_resource_distribution"]
+    }
+    for el in sim.findall(_q("task")):
+        block = el.find(_q("eligibleResources"))
+        if block is None:
+            continue
+        written = {
+            item.get("resourceId")
+            for item in block.findall(_q("eligibleResource"))
+        }
+        expected = expected_eligible[el.get("id")]
+        if written != expected:
+            raise ValueError(
+                f"task {el.get('id')} eligible resources mismatch; "
+                f"missing={sorted(expected - written)} "
+                f"unexpected={sorted(written - expected)}"
+            )
+        if not written:
+            # Scylla would queue every instance of this activity forever.
+            raise ValueError(f"task {el.get('id')} has no eligible resources")
 
     for kind in PROBABILISTIC_GATEWAYS:
         for el in sim.findall(_q(kind)):

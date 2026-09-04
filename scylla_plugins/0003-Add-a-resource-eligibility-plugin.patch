@@ -1,0 +1,432 @@
+From e9610d7f906b14d573a3011f70a5b04de7643ede Mon Sep 17 00:00:00 2001
+From: DogukanDG <dagtekindogukan1@gmail.com>
+Date: Thu, 3 Sep 2026 13:45:11 +0200
+Subject: [PATCH] Add a resource eligibility plugin
+
+Scylla can express which resources exist and how many, or which resources
+may perform which activity, but not both. A list of resources on an activity
+means all of them are required at once, so representing alternatives as a
+pool per activity duplicates every resource used by more than one: on BPIC
+2012 that raised total capacity from 47 to 191. Putting every resource in a
+single shared pool keeps capacity right but lets every activity draw on all
+47, which removes most of the queueing -- measured against Prosimos on the
+same model, mean waiting time was 422 s against 3914 s.
+
+This plugin takes over resource assignment so both hold at once. The pool
+still declares the instances and their calendars; the plugin restricts each
+activity to the resources the model lists for it, and picks the least
+recently used among those that are free.
+
+Selection keeps Scylla's own rule rather than imitating another engine's.
+With two resources on one activity at 10 s and 100 s, both always available,
+Scylla and Prosimos each give the fast one 91% of executions, so there was
+nothing to reconcile.
+
+QueueManager gains pollAvailable(typeId, wanted, now) and returnResources().
+A plugin replacing assignment has to see which instances are free and take
+one, and the queue map is private -- deliberately, since the bookkeeping
+belongs there. These keep it there: unavailable and unwanted instances go
+back before the call returns, and the caller hands back what it does not use.
+Existing behaviour is untouched; nothing calls them unless a plugin does.
+
+Activities with no <eligibleResources> fall through to Scylla's own
+assignment, so a configuration without the element behaves as before.
+---
+ .../eligibility/EligibilityPluginUtils.java   |  62 ++++++++
+ .../EligibilityResourceAssignmentPlugin.java  | 132 ++++++++++++++++++
+ .../EligibilitySCParserPlugin.java            | 102 ++++++++++++++
+ .../bpt/scylla/simulation/QueueManager.java   |  51 +++++++
+ .../resources/META-INF/plugins/plugins_list   |   1 +
+ 5 files changed, 348 insertions(+)
+ create mode 100644 src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java
+ create mode 100644 src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java
+ create mode 100644 src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilitySCParserPlugin.java
+
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java
+new file mode 100644
+index 0000000..d35372d
+--- /dev/null
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java
+@@ -0,0 +1,62 @@
++package de.hpi.bpt.scylla.plugin.eligibility;
++
++/**
++ * Magic strings for the resource eligibility plugin.
++ *
++ * Scylla can express either the correct total capacity or which resources may
++ * perform which activity, but not both. Listing several resources on an
++ * activity means all of them are required at once, so the alternative -- a pool
++ * per activity -- duplicates any resource that appears in more than one, which
++ * inflated capacity from 47 to 191 on BPIC 2012.
++ *
++ * Putting every resource in one shared pool keeps capacity right but lets every
++ * activity draw on all of them. Measured against Prosimos, that removes most of
++ * the queueing: mean waiting time 3914 s against 422 s, and cycle time roughly
++ * halved.
++ *
++ * This plugin takes over resource assignment so both can hold at once: one pool
++ * of every resource, but each activity restricted to those the model says can
++ * perform it.
++ */
++public class EligibilityPluginUtils {
++
++    /** Plugin name. */
++    public static final String PLUGIN_NAME = "resourceEligibility";
++
++    /** Key under which the parsed eligibility sets are stored. */
++    public static final String ELIGIBILITY_KEY = "eligibleResources";
++
++    /** Element wrapping the eligible resources, as a child of a task. */
++    public static final String ELEMENT_NAME = "eligibleResources";
++
++    /** Element naming one eligible resource. */
++    public static final String ITEM_ELEMENT_NAME = "eligibleResource";
++
++    /** Attribute holding the resource id. */
++    public static final String RESOURCE_ID_ATTRIBUTE = "resourceId";
++
++    /**
++     * Separator between a pool id and a resource id in an instance name.
++     *
++     * Scylla identifies a running resource by its instance name. The converter
++     * names instances {@code <pool>__<resourceId>} so the original resource can
++     * be recovered; names without the separator are used unchanged.
++     */
++    public static final String INSTANCE_NAME_SEPARATOR = "__";
++
++    /**
++     * Recovers the model's resource id from a Scylla instance name.
++     */
++    public static String resourceIdOf(String instanceName) {
++        if (instanceName == null) {
++            return null;
++        }
++        int index = instanceName.lastIndexOf(INSTANCE_NAME_SEPARATOR);
++        return index < 0
++                ? instanceName
++                : instanceName.substring(index + INSTANCE_NAME_SEPARATOR.length());
++    }
++
++    private EligibilityPluginUtils() {
++    }
++}
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java
+new file mode 100644
+index 0000000..322398c
+--- /dev/null
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java
+@@ -0,0 +1,132 @@
++package de.hpi.bpt.scylla.plugin.eligibility;
++
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Optional;
++import java.util.Set;
++
++import de.hpi.bpt.scylla.model.configuration.SimulationConfiguration;
++import de.hpi.bpt.scylla.plugin_type.simulation.resource.ResourceAssignmentPluggable;
++import de.hpi.bpt.scylla.simulation.QueueManager;
++import de.hpi.bpt.scylla.simulation.ResourceObject;
++import de.hpi.bpt.scylla.simulation.ResourceObjectTuple;
++import de.hpi.bpt.scylla.simulation.SimulationModel;
++import de.hpi.bpt.scylla.simulation.event.ScyllaEvent;
++import desmoj.core.simulator.TimeInstant;
++
++/**
++ * Assigns one resource from the activity's eligible set instead of using
++ * Scylla's own assignment.
++ *
++ * Scylla reads a list of resources on an activity as "all of these at once", so
++ * "any one of these" -- which is what a Simod model says -- cannot be written in
++ * the configuration. Taking over assignment here expresses it directly: the
++ * shared pool still holds every resource once, so total capacity stays right,
++ * and this plugin restricts each activity to the resources that may perform it.
++ *
++ * Selection keeps Scylla's rule, least recently used first, which was measured
++ * to behave the same as Prosimos's earliest-available rule: with two resources
++ * at 10 s and 100 s, both engines give the fast one 91% of executions.
++ */
++public class EligibilityResourceAssignmentPlugin extends ResourceAssignmentPluggable {
++
++    @Override
++    public String getName() {
++        return EligibilityPluginUtils.PLUGIN_NAME;
++    }
++
++    @Override
++    public boolean wantsToHandleAssignment(SimulationModel model, ScyllaEvent event) {
++        return eligibleResourcesFor(event) != null;
++    }
++
++    @Override
++    public Optional<ResourceObjectTuple> getResourcesForEvent(SimulationModel model, ScyllaEvent event) {
++        Set<String> eligible = eligibleResourcesFor(event);
++        if (eligible == null) {
++            // wantsToHandleAssignment said otherwise; nothing sensible to do.
++            return Optional.empty();
++        }
++
++        QueueManager queueManager = model.getResourceManager();
++        TimeInstant now = model.presentTime();
++
++        // Poll every resource type, keeping only the eligible instances. The
++        // converter writes one shared pool, but nothing here depends on that.
++        List<ResourceObject> candidates = new ArrayList<ResourceObject>();
++        List<String> typesPolled = new ArrayList<String>();
++        for (String typeId : new ArrayList<String>(queueManager.getResourceTypes())) {
++            List<ResourceObject> available = queueManager.pollAvailable(typeId, null, now);
++            if (available.isEmpty()) {
++                continue;
++            }
++            typesPolled.add(typeId);
++            candidates.addAll(available);
++        }
++
++        if (candidates.isEmpty()) {
++            return Optional.empty();
++        }
++
++        ResourceObject chosen = null;
++        for (ResourceObject candidate : candidates) {
++            if (!eligible.contains(EligibilityPluginUtils.resourceIdOf(candidate.getId()))) {
++                continue;
++            }
++            // Least recently used first, as QueueManager's own comparator does.
++            if (chosen == null || candidate.getTimeOfLastAccess() < chosen.getTimeOfLastAccess()) {
++                chosen = candidate;
++            }
++        }
++
++        // Everything not taken goes back, or it is lost for the rest of the run.
++        for (ResourceObject candidate : candidates) {
++            if (candidate != chosen) {
++                queueManager.returnResources(candidate.getResourceType(), single(candidate));
++            }
++        }
++
++        if (chosen == null) {
++            // Eligible resources exist but none is free now; queue the event.
++            return Optional.empty();
++        }
++
++        ResourceObjectTuple tuple = new ResourceObjectTuple();
++        tuple.getResourceObjects().add(chosen);
++        // One resource, so its own timetable is the shared one -- the same thing
++        // QueueManager.findMatchingResourceObjects does for the first object.
++        tuple.setSharedTimetable(chosen.getTimetable());
++        tuple.setAvgOfLastAccesses(chosen.getTimeOfLastAccess());
++        return Optional.of(tuple);
++    }
++
++    /**
++     * The eligible resources of the event's activity, or null if it has none
++     * declared, in which case Scylla's own assignment should run.
++     */
++    @SuppressWarnings("unchecked")
++    private static Set<String> eligibleResourcesFor(ScyllaEvent event) {
++        if (event.getSimulationComponents() == null) {
++            return null;
++        }
++        SimulationConfiguration simulationConfiguration =
++                event.getSimulationComponents().getSimulationConfiguration();
++        if (simulationConfiguration == null) {
++            return null;
++        }
++        Object eligibility = simulationConfiguration.getExtensionValue(
++                EligibilityPluginUtils.PLUGIN_NAME, EligibilityPluginUtils.ELIGIBILITY_KEY);
++        if (!(eligibility instanceof Map)) {
++            return null;
++        }
++        return ((Map<Integer, Set<String>>) eligibility).get(event.getNodeId());
++    }
++
++    private static Set<ResourceObject> single(ResourceObject resourceObject) {
++        Set<ResourceObject> set = new HashSet<ResourceObject>();
++        set.add(resourceObject);
++        return set;
++    }
++}
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilitySCParserPlugin.java b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilitySCParserPlugin.java
+new file mode 100644
+index 0000000..6d6637a
+--- /dev/null
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilitySCParserPlugin.java
+@@ -0,0 +1,102 @@
++package de.hpi.bpt.scylla.plugin.eligibility;
++
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.Map;
++import java.util.Set;
++
++import org.jdom2.Element;
++import org.jdom2.Namespace;
++
++import de.hpi.bpt.scylla.exception.ScyllaValidationException;
++import de.hpi.bpt.scylla.logger.DebugLogger;
++import de.hpi.bpt.scylla.model.configuration.SimulationConfiguration;
++import de.hpi.bpt.scylla.model.process.ProcessModel;
++import de.hpi.bpt.scylla.plugin_type.parser.SimulationConfigurationParserPluggable;
++
++/**
++ * Parses {@code <eligibleResources>} out of a task in the simulation
++ * configuration.
++ *
++ * <pre>
++ * &lt;task id="..."&gt;
++ *   &lt;eligibleResources&gt;
++ *     &lt;eligibleResource resourceId="10125"/&gt;
++ *     &lt;eligibleResource resourceId="10138"/&gt;
++ *   &lt;/eligibleResources&gt;
++ * &lt;/task&gt;
++ * </pre>
++ *
++ * Resources are listed individually rather than as groups. The model's
++ * capability groups overlap -- one BPIC 2012 activity can be performed by nine
++ * of the thirteen -- so a group-based encoding would need the same
++ * any-one-of-these semantics Scylla lacks, which is what this plugin exists to
++ * work around.
++ */
++public class EligibilitySCParserPlugin extends SimulationConfigurationParserPluggable {
++
++    @Override
++    public String getName() {
++        return EligibilityPluginUtils.PLUGIN_NAME;
++    }
++
++    @Override
++    public Map<String, Object> parse(SimulationConfiguration simulationInput, Element sim)
++            throws ScyllaValidationException {
++
++        Map<Integer, Set<String>> eligibility = new HashMap<Integer, Set<String>>();
++        Namespace simNamespace = sim.getNamespace();
++        ProcessModel processModel = simulationInput.getProcessModel();
++
++        for (Element el : sim.getChildren()) {
++            String elementName = el.getName();
++            // Scylla accepts "task" and anything ending in "Task".
++            if (!"task".equals(elementName) && !elementName.endsWith("Task")) {
++                continue;
++            }
++
++            Element wrapper = el.getChild(EligibilityPluginUtils.ELEMENT_NAME, simNamespace);
++            if (wrapper == null) {
++                continue;
++            }
++
++            String identifier = el.getAttributeValue("id");
++            if (identifier == null) {
++                DebugLogger.log("Task with eligible resources has no identifier, skip.");
++                continue;
++            }
++
++            Integer nodeId = processModel.getIdentifiersToNodeIds().get(identifier);
++            if (nodeId == null) {
++                DebugLogger.log("Task " + identifier
++                        + " is not in the process model, skip its eligible resources.");
++                continue;
++            }
++
++            Set<String> resourceIds = new HashSet<String>();
++            for (Element item : wrapper.getChildren(
++                    EligibilityPluginUtils.ITEM_ELEMENT_NAME, simNamespace)) {
++                String resourceId = item.getAttributeValue(
++                        EligibilityPluginUtils.RESOURCE_ID_ATTRIBUTE);
++                if (resourceId == null) {
++                    throw new ScyllaValidationException("An eligibleResource of task " + identifier
++                            + " has no " + EligibilityPluginUtils.RESOURCE_ID_ATTRIBUTE
++                            + " attribute.");
++                }
++                resourceIds.add(resourceId);
++            }
++
++            if (resourceIds.isEmpty()) {
++                // An empty set would make the activity unperformable, which is
++                // never intended and would deadlock silently.
++                throw new ScyllaValidationException(
++                        "Task " + identifier + " lists no eligible resources.");
++            }
++            eligibility.put(nodeId, resourceIds);
++        }
++
++        Map<String, Object> extensionAttributes = new HashMap<String, Object>();
++        extensionAttributes.put(EligibilityPluginUtils.ELIGIBILITY_KEY, eligibility);
++        return extensionAttributes;
++    }
++}
+diff --git a/src/main/java/de/hpi/bpt/scylla/simulation/QueueManager.java b/src/main/java/de/hpi/bpt/scylla/simulation/QueueManager.java
+index b232a41..1aafe2c 100644
+--- a/src/main/java/de/hpi/bpt/scylla/simulation/QueueManager.java
++++ b/src/main/java/de/hpi/bpt/scylla/simulation/QueueManager.java
+@@ -103,6 +103,57 @@ public class QueueManager {
+     	return resourceObjects.keySet();
+     }    
+ 
++    /**
++     * Polls the queue of one resource type for instances that are available now,
++     * keeping only those whose instance name is in {@code wanted}.
++     *
++     * Exists for plugins that take over resource assignment: they need to see
++     * which specific instances are free, and the queue map itself is private so
++     * that queue bookkeeping stays here. Instances that are unavailable, or
++     * available but not wanted, are returned to the queue before this method
++     * returns; the caller owns only what it receives, and must hand back
++     * anything it does not use via {@link #returnResources}.
++     *
++     * @param typeId  the resource type (a dynamicResource id)
++     * @param wanted  instance names to keep; null means keep all available
++     * @param now     current simulation time
++     * @return the available instances that were wanted, removed from the queue
++     */
++    public List<ResourceObject> pollAvailable(String typeId, Set<String> wanted, TimeInstant now) {
++        ResourceQueue queue = resourceObjects.get(typeId);
++        if (queue == null) {
++            return new ArrayList<ResourceObject>();
++        }
++
++        List<ResourceObject> available = queue.pollAvailable(now);
++        if (wanted == null) {
++            return available;
++        }
++
++        List<ResourceObject> kept = new ArrayList<ResourceObject>();
++        List<ResourceObject> rejected = new ArrayList<ResourceObject>();
++        for (ResourceObject resourceObject : available) {
++            if (wanted.contains(resourceObject.getId())) {
++                kept.add(resourceObject);
++            }
++            else {
++                rejected.add(resourceObject);
++            }
++        }
++        queue.addAll(rejected);
++        return kept;
++    }
++
++    /**
++     * Returns instances taken by {@link #pollAvailable} to their queue.
++     */
++    public void returnResources(String typeId, Collection<ResourceObject> resourceObjects) {
++        ResourceQueue queue = this.resourceObjects.get(typeId);
++        if (queue != null && resourceObjects != null && !resourceObjects.isEmpty()) {
++            queue.addAll(resourceObjects);
++        }
++    }
++
+     /**
+      * Checks whether resource instances are available for the given event.
+      * 
+diff --git a/src/main/resources/META-INF/plugins/plugins_list b/src/main/resources/META-INF/plugins/plugins_list
+index d38143a..f10e4b9 100644
+--- a/src/main/resources/META-INF/plugins/plugins_list
++++ b/src/main/resources/META-INF/plugins/plugins_list
+@@ -13,3 +13,4 @@ de.hpi.bpt.scylla.plugin.eventArrivalRate
+ de.hpi.bpt.scylla.plugin.gateway_eventbased
+ de.hpi.bpt.scylla.plugin.arrivalcalendar
+ de.hpi.bpt.scylla.plugin.resourceduration
++de.hpi.bpt.scylla.plugin.eligibility
+-- 
+2.51.2.windows.1
+

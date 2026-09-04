@@ -120,12 +120,26 @@ def test_emitted_distributions_match_the_model(model, bpmn):
 # --------------------------------------------------------------------------
 
 def run_scylla(model, bpmn, cases, tmp_path, **kwargs):
+    """Run one sample with eligibility off unless a test asks otherwise.
+
+    Nothing here measures eligibility -- these tests are about durations
+    following the assigned resource. Leaving it on would confound the
+    comparisons below, since the pooled and per-resource runs would then differ
+    in two things at once rather than one.
+
+    It is not what makes these tests slow. That is the bimodal model: half the
+    resources sit at 6000 s, which stretches the simulated interval regardless
+    of eligibility. Measured with everything off, one 300-case run still took
+    over eight minutes, which is why the case counts here are small.
+    """
     from src.simulation_pipeline.simulation.scylla import run_scylla as R
 
+    options = {"eligibility": False}
+    options.update(kwargs)
+
     original = S.build_sim_config
-    if kwargs:
-        S.build_sim_config = lambda *a, **k: original(*a, **{**k, **kwargs})
-        R.build_sim_config = S.build_sim_config
+    S.build_sim_config = lambda *a, **k: original(*a, **{**k, **options})
+    R.build_sim_config = S.build_sim_config
     try:
         result = R.simulate_sample_scylla(
             sample_id=0, sample_data=model, bpmn_path=bpmn, total_cases=cases,
@@ -184,7 +198,7 @@ def test_durations_follow_the_assigned_resource(model, bpmn, tmp_path):
     ones. Durations that span a calendar boundary are longer in wall-clock terms,
     so the assertion is on the dominant share rather than on every observation.
     """
-    _, output = run_scylla(bimodal_model(model), bpmn, 300, tmp_path)
+    _, output = run_scylla(bimodal_model(model), bpmn, 100, tmp_path)
     durations = observed_durations(output, "W_Completeren aanvraag")
     assert durations, "activity never ran"
 
@@ -197,17 +211,24 @@ def test_durations_follow_the_assigned_resource(model, bpmn, tmp_path):
 
 @needs_jar
 def test_pooling_would_not_produce_that(model, bpmn, tmp_path):
-    """The contrast: with the per-resource block removed, the same model gives
-    a spread of intermediate durations."""
-    _, output = run_scylla(bimodal_model(model), bpmn, 300, tmp_path,
+    """The contrast: pooling produces durations that no resource declares.
+
+    The assertion is on those appearing at all, not on how common they are.
+    Pooling a two-valued model gives a histogram whose buckets are mostly the
+    two input values themselves -- 60, 6000 and one bucket between them -- so
+    most observations still land on 60 or 6000 even when the durations are
+    demonstrably not following the assigned resource. What separates the two
+    runs is that the intermediate value can only come from the pool.
+    """
+    _, output = run_scylla(bimodal_model(model), bpmn, 100, tmp_path,
                            resource_durations=False)
     durations = observed_durations(output, "W_Completeren aanvraag")
     assert durations
 
-    exact = [d for d in durations if round(d) in (60, 6000)]
-    assert len(exact) / len(durations) < 0.85, (
-        "pooled durations reproduced the two exact values, so the comparison "
-        "above proves nothing"
+    intermediate = [d for d in durations if 60 < round(d) < 6000]
+    assert intermediate, (
+        "pooled durations produced only the two configured values, so the "
+        "comparison above proves nothing"
     )
 
 
