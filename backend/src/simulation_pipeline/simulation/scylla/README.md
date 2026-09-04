@@ -245,11 +245,12 @@ not a converter defect.
 
 ---
 
-## The two plugins, and what they changed
+## The three plugins, and what they changed
 
 Samira's decision (2026-09-01) was to keep the differentiated Simod output and
-extend Scylla instead of pooling the model to fit it. Both plugins are written
-and measured.
+extend Scylla instead of pooling the model to fit it. The first two plugins are
+written and measured; the third is written and tested, and its effect on the
+engine gap is not measured yet.
 
 Measured on BPIC 2012 at 500 cases, mean cycle time:
 
@@ -353,6 +354,76 @@ assignment outright, before the all-required-at-once semantics or the pool are
 involved. Per-activity eligible sets can then be honoured directly with correct
 capacity -- the two things Scylla's own XML cannot express together. No core
 change, unlike the duration plugin.
+
+### The eligibility plugin (written, effect not yet measured)
+
+Written to close the gap the section above attributes to the shared pool.
+`ResourceAssignmentPluggable` lets a plugin replace assignment outright, before
+the all-required-at-once semantics or the pool are consulted, so per-activity
+eligible sets and correct total capacity can hold at once -- the two things
+Scylla's own XML cannot express together.
+
+The converter emits `<eligibleResources>` per task, listing resources
+individually rather than by group: the model's capability groups overlap (one
+BPIC 2012 activity is performable by nine of the thirteen), so a group encoding
+would need the same any-one-of-these semantics that is missing in the first
+place. The shared pool stays -- it still declares the instances and their
+calendars, and it is the fallback for a build without the plugin.
+
+Selection keeps Scylla's own least-recently-used rule. Nothing was reconciled
+with Prosimos here, because the measurement above found the two already agree.
+
+**One core change was needed**, contrary to the plan, which had expected none.
+`QueueManager`'s queue map is private, and a plugin taking over assignment has
+to see which instances are free and take one. `pollAvailable(typeId, wanted,
+now)` and `returnResources()` keep that bookkeeping inside QueueManager: what is
+unavailable or unwanted goes back before the call returns. (`availableResources`
+already exists and is public, but returns the whole queue with no availability
+filter, so it does not serve.)
+
+What is verified: no activity is ever performed by a resource the model does not
+list for it, and the same run without the plugin does produce such assignments,
+so the check is not passing vacuously. Capacity stays 47. 9 tests in
+`test_eligibility_plugin.py`.
+
+### Measured: it exposed a bug in our own arrival plugin
+
+Turning eligibility on sent the ratio to **4.08** rather than towards 1.0 --
+mean waiting time 25266 s against Prosimos's 2062 s. Chasing that down took
+several wrong turns, recorded here because two of them looked convincing.
+
+The cause was not eligibility, resource calendars, or resource selection. It was
+the arrival calendar plugin. It moved each late arrival to the opening of the
+next window independently, so every case that missed a window landed on the same
+instant. This model starts on a Sunday and its arrival calendar opens for one
+hour that evening, so **all 100 cases arrived in the same second** -- an arrival
+span of 0.0 hours against Prosimos's 36.1.
+
+Eligibility did not cause that; it removed what was hiding it. With the shared
+pool, 47 resources absorbed 100 simultaneous cases and no queue was visible.
+
+| | Scylla / Prosimos, cycle time |
+|---|---|
+| before the fix, eligibility off | 0.68 |
+| before the fix, eligibility on | 4.08 |
+| **after the fix, eligibility off** | **1.11** |
+| **after the fix, eligibility on** | **1.03** |
+
+At 500 cases the ratio is 0.75 with eligibility on. Waiting time went from
+25266 s to 88 s at 100 cases.
+
+**Two earlier claims in this file were wrong and are withdrawn.** The gap was
+attributed first to resource calendars and then to a defect in Scylla's
+`getTimeTableIndexWithinOrNext`. That helper does have a real inconsistency --
+it ranks windows with `getNextOrSameZonedDateTime` while callers convert with
+`getNextZonedDateTime` -- and a probe over a full week shows it waking a
+resource late in 34 of 163 idle hours against a deliberately out-of-order
+calendar. But this model's calendars are in chronological order, so it never
+fires here: two fixes to it changed the measured numbers by nothing at all.
+Worth reporting to Leon as a latent bug, not as the cause of anything we saw.
+
+The lesson is the same one this file has recorded twice already: reading an
+implementation and inferring a cause is not measurement.
 
 ### What this means for the comparison
 

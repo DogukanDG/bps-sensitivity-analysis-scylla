@@ -182,22 +182,39 @@ def test_without_the_calendar_arrivals_spread_over_the_week(model, bpmn, tmp_pat
 
 
 @needs_jar
-def test_deferral_clusters_arrivals_at_window_openings(model, bpmn, tmp_path):
-    """A known and intended side effect, recorded rather than hidden.
+def test_deferred_arrivals_are_spread_not_stacked(model, bpmn, tmp_path):
+    """Deferring must queue a backlog, not drop it all on one instant.
 
-    Cases drawn for closed hours pile up at the next opening, so the realised
-    inter-arrival distribution is not exactly the configured one. Prosimos
-    compresses arrivals differently, so this is a residual difference between
-    the engines even with the plugin in place.
+    An earlier version of the plugin moved each late arrival to the opening of
+    the next window independently, so every case that missed a window landed at
+    the same moment. With this model -- a run starting on a Sunday, whose
+    arrival calendar opens for one hour that evening -- all 100 cases of a
+    100-case run arrived in the same second. The queue that produced dominated
+    every measurement taken from the run: mean waiting time was 25266 s against
+    Prosimos's 2062 s, and cycle time 27265 s against 4463 s. Spacing the
+    backlog brings those to 88 s and 4597 s.
+
+    This test asserted the opposite until then, treating the pile-up as an
+    accepted cost of deferring. It was a bug, not a cost.
     """
     _, output = run_scylla(model, bpmn, 300, tmp_path)
-    times = arrival_times(output)
+    times = sorted(arrival_times(output))
+    assert len(times) > 1
+
+    span = (times[-1] - times[0]).total_seconds()
+    assert span > 3600, (
+        f"300 arrivals span only {span:.0f}s; they are stacking at window "
+        f"openings rather than queueing")
+
+    first_minute = sum(1 for t in times if (t - times[0]).total_seconds() < 60)
+    assert first_minute < len(times) / 10, (
+        f"{first_minute} of {len(times)} arrivals land in the first minute")
+
+    # Hours still differ -- the calendar closes and a backlog is worked off
+    # afterwards -- but no single hour should hold most of the run.
     counts = collections.Counter(t.hour for t in times)
-    busiest = max(counts.values())
-    assert busiest > 2 * (len(times) / max(len(counts), 1)), (
-        "expected a pile-up at window openings; if this stops holding the "
-        "deferral semantics have changed"
-    )
+    assert max(counts.values()) < len(times) / 3, (
+        f"one hour holds {max(counts.values())} of {len(times)} arrivals")
 
 
 @needs_jar

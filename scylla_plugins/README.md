@@ -1,6 +1,6 @@
 # Scylla plugins — source patches
 
-Two plugins written against `bptlab/scylla`, kept here as patches because that
+Three plugins written against `bptlab/scylla`, plus a fix to the first, kept here as patches because that
 repository is not ours to push to. The working tree they came from is a local
 clone; these files are the durable copy.
 
@@ -8,6 +8,8 @@ clone; these files are the durable copy.
 |---|---|
 | `0001-Add-an-arrival-calendar-plugin.patch` | Restricts case arrivals to the hours the Simod arrival calendar covers |
 | `0002-Add-a-resource-dependent-task-duration-plugin.patch` | Uses the duration distribution of the resource actually performing a task |
+| `0003-Add-a-resource-eligibility-plugin.patch` | Restricts each activity to the resources the model lists for it, keeping total capacity correct |
+| `0004-Space-deferred-arrivals-instead-of-stacking-them-on-.patch` | Fixes 0001: deferred arrivals were all landing on the instant their window opened |
 
 The commit messages carry the reasoning and the measurements; the adapter
 README (`backend/src/simulation_pipeline/simulation/scylla/README.md`) has the

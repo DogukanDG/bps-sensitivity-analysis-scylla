@@ -1,0 +1,131 @@
+From 2e913dce2e463f8e4f826d7ad42b2086eb43e58d Mon Sep 17 00:00:00 2001
+From: DogukanDG <dagtekindogukan1@gmail.com>
+Date: Fri, 4 Sep 2026 10:51:32 +0200
+Subject: [PATCH] Space deferred arrivals instead of stacking them on the
+ window opening
+
+The plugin moved each late arrival to the opening of the next window
+independently, so every case that missed a window landed at the same instant.
+On BPIC 2012 with a run starting on a Sunday, whose arrival calendar opens
+for one hour that evening, all 100 cases arrived in the same second: an
+arrival span of 0.0 hours against Prosimos's 36.1.
+
+The queue that produced dominated everything measured from the run. Mean
+waiting time was 25266 s against Prosimos's 2062 s and cycle time 27265 s
+against 4463 s, so Scylla looked four times slower than Prosimos on a model
+where the two actually agree.
+
+Deferred arrivals are now laid out in order, each spaced from the last one
+placed by the gap between their generation events. Those events already fire
+at the configured rate -- only the deferral collapsed them -- so this
+restores the configured spacing without drawing from the distribution again.
+Measured after the change: arrival span 37.7 h, mean gap 243 s (the same as a
+run with no arrival calendar at all), waiting time 88 s, cycle time 4597 s.
+
+The spacing can carry an arrival back outside the calendar, so the deferral
+is applied again; that terminates because each pass moves strictly forward.
+State is keyed by simulation model with weak keys, since Scylla loads one
+plugin instance per JVM and a second run would otherwise continue from the
+first one's clock.
+
+test_deferred_arrivals_are_spread_not_stacked replaces a test that asserted
+the pile-up as an accepted cost of deferring. It was a bug, not a cost.
+---
+ .../ArrivalCalendarSchedulingPlugin.java      | 64 +++++++++++++++++--
+ 1 file changed, 59 insertions(+), 5 deletions(-)
+
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarSchedulingPlugin.java b/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarSchedulingPlugin.java
+index 4ec60e7..f9ea7bc 100644
+--- a/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarSchedulingPlugin.java
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarSchedulingPlugin.java
+@@ -4,6 +4,7 @@ import java.time.ZonedDateTime;
+ import java.time.temporal.TemporalAdjusters;
+ import java.util.List;
+ import java.util.Map;
++import java.util.WeakHashMap;
+ 
+ import de.hpi.bpt.scylla.exception.ScyllaRuntimeException;
+ import de.hpi.bpt.scylla.model.global.resource.TimetableItem;
+@@ -27,9 +28,17 @@ import desmoj.core.simulator.TimeSpan;
+  * comparable across engines and across configurations -- Prosimos compresses
+  * the same case count into the open hours, so this is the closer match.
+  *
+- * The cost is that arrivals cluster slightly at the start of each window, so
+- * the realised inter-arrival distribution is not exactly the configured one.
+- * That is inherent to the choice and belongs in any write-up of the results.
++ * <b>Queued, not stacked.</b> Deferring each arrival on its own puts every case
++ * that missed a window at the exact instant it opens. With a run starting on a
++ * Sunday and a one-hour Sunday window, all 100 cases of a BPIC 2012 run arrived
++ * in the same second, and the queue that produced dominated every measurement
++ * taken from it. Deferred arrivals are laid out one after another instead,
++ * spaced by the gaps the generation events already carry, which is what
++ * Prosimos does when it compresses the same case count into the open hours.
++ *
++ * The cost is that arrivals still bunch after a long closure, since a backlog
++ * has to be worked off. That is inherent to deferring rather than dropping, and
++ * belongs in any write-up of the results.
+  *
+  * The calendar arithmetic is not new: DateTimeUtils already locates the current
+  * or next window for resource calendars, and this reuses it.
+@@ -84,11 +93,56 @@ public class ArrivalCalendarSchedulingPlugin extends ProcessInstanceGenerationEv
+         TimeInstant arrival = new TimeInstant(model.presentTime().getTimeAsDouble() + offsetTime);
+ 
+         double delay = delayIntoNextWindow(arrival, calendar);
+-        if (delay > 0d) {
+-            event.setTimeSpanToStartEvent(new TimeSpan(offsetTime + delay));
++        double arrivalTime = arrival.getTimeAsDouble() + delay;
++
++        // Lay a backlog out in order rather than stacking it on the instant the
++        // window opens.
++        //
++        // The generation events themselves fire at the configured rate -- it is
++        // only the deferral that collapses them -- so the gap between this
++        // event and the previous one is the spacing to preserve. Adding it to
++        // the last arrival placed keeps the realised rate inside the window
++        // close to the configured one; without it, every case that missed the
++        // window lands at the same moment.
++        Double previousArrival = LAST_ARRIVAL.get(model);
++        Double previousEvent = LAST_EVENT.get(model);
++        double now = model.presentTime().getTimeAsDouble();
++
++        if (previousArrival != null && arrivalTime <= previousArrival.doubleValue()) {
++            double spacing = previousEvent == null ? 0d : now - previousEvent.doubleValue();
++            if (spacing <= 0d) {
++                spacing = 1d; // events at the same instant still need an order
++            }
++            arrivalTime = previousArrival.doubleValue() + spacing;
++            // The spacing can carry the arrival back out of the calendar, so
++            // ask again; this converges because each pass moves strictly
++            // forward.
++            arrivalTime += delayIntoNextWindow(new TimeInstant(arrivalTime), calendar);
++        }
++
++        LAST_ARRIVAL.put(model, Double.valueOf(arrivalTime));
++        LAST_EVENT.put(model, Double.valueOf(now));
++
++        double newOffset = arrivalTime - now;
++        if (newOffset < 0d) {
++            newOffset = 0d;
+         }
++        event.setTimeSpanToStartEvent(new TimeSpan(newOffset));
+     }
+ 
++    /**
++     * The last arrival this plugin placed, and the time of the event that
++     * placed it, per simulation model.
++     *
++     * Scylla loads one plugin instance per JVM, so this has to be keyed by
++     * model or a second run in the same process would continue from the first
++     * one's clock. Weak keys let a finished model be collected.
++     */
++    private static final Map<SimulationModel, Double> LAST_ARRIVAL =
++            java.util.Collections.synchronizedMap(new WeakHashMap<SimulationModel, Double>());
++    private static final Map<SimulationModel, Double> LAST_EVENT =
++            java.util.Collections.synchronizedMap(new WeakHashMap<SimulationModel, Double>());
++
+     /**
+      * How long the given instant must wait before the calendar is open, in the
+      * simulation's reference time unit. Zero when it is already inside a window.
+-- 
+2.51.2.windows.1
+

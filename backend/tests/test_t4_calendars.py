@@ -95,8 +95,16 @@ def test_a_baseline_agrees(source, bpmn):
 
 
 @needs_both
-def test_b_real_resources_and_calendars_diverge(source, bpmn):
-    """Everything real except the durations. This is where the gap appears."""
+def test_b_real_resources_and_calendars_agree(source, bpmn):
+    """Everything real except the durations.
+
+    This measured 0.53 when written, and the gap was attributed to resource
+    calendars. That attribution was wrong. The cause was the arrival calendar
+    plugin stacking every deferred arrival on the instant its window opened,
+    which made Scylla's queue behaviour meaningless for any model whose run
+    starts outside the arrival calendar. With the arrivals spaced, the engines
+    agree here, so this now pins agreement rather than divergence.
+    """
     model = baseline(source)
     model["resource_calendars"] = json.loads(json.dumps(source["resource_calendars"]))
     model["resource_profiles"] = json.loads(json.dumps(source["resource_profiles"]))
@@ -107,8 +115,11 @@ def test_b_real_resources_and_calendars_diverge(source, bpmn):
             for r in by_task[task["task_id"]]["resources"]
         ]
 
-    # Scylla finishes materially sooner; measured ~0.53.
-    assert ratio(model, bpmn) < 0.8
+    # Measured 0.96 once arrivals were spaced; 0.53 before that.
+    observed = ratio(model, bpmn)
+    assert 0.8 < observed < 1.25, (
+        f"engines {observed:.2f}x apart with real calendars and fixed "
+        f"durations; they agreed to within 4% when this was written")
 
 
 @needs_both
