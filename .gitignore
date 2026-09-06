@@ -25,3 +25,7 @@ docker_build/*.tar.gz
 
 # Simod pool-mode experiment outputs (config and notes live in backend/simod_pool/)
 backend/simod_pool/runs/
+
+# Per-run artifacts written by run_experiments.py
+*_run_times.csv
+*_batch_log.txt

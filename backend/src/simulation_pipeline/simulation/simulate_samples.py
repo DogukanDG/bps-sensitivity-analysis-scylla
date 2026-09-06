@@ -205,19 +205,98 @@ def _n_jobs_for(engine: str, engine_options: Dict[str, Any] | None) -> int:
           else float(heap[:-1]) / 1024 if heap.endswith("m")
           else 1.0)
 
-    total_gb = 8.0
+    total_gb = _available_memory_gb()
+    cores = _available_cores()
+
+    # Leave roughly a third of memory for the OS and the parent process.
+    by_memory = max(1, int((total_gb * 0.6) / max(gb, 0.25)))
+    by_cores = max(1, cores - 4)
+    return min(by_memory, by_cores)
+
+
+def _available_memory_gb(default: float = 8.0) -> float:
+    """Memory this process may use, in GB.
+
+    Under Slurm the allocation is the limit, not the node: a compute node with
+    2 TB shared between jobs must not be sized as if all of it were ours.
+    SLURM_MEM_PER_NODE is in MB; SLURM_MEM_PER_CPU has to be multiplied by the
+    cores we were given.
+
+    Off the cluster, `os.sysconf` gives the machine's total on Unix but does not
+    exist on Windows, where the fallback used to leave this pinned at the 8 GB
+    default -- sizing a 16 GB laptop as though it were half that.
+    """
+    import os
+
+    per_node = os.environ.get("SLURM_MEM_PER_NODE")
+    if per_node:
+        try:
+            return float(per_node) / 1024
+        except ValueError:
+            pass
+
+    per_cpu = os.environ.get("SLURM_MEM_PER_CPU")
+    if per_cpu:
+        try:
+            return float(per_cpu) * _available_cores() / 1024
+        except ValueError:
+            pass
+
     try:
-        import shutil  # noqa: F401
-        if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names:
-            total_gb = (os.sysconf("SC_PAGE_SIZE")
-                        * os.sysconf("SC_PHYS_PAGES")) / 1024**3
+        if hasattr(os, "sysconf") and "SC_PHYS_PAGES" in os.sysconf_names:
+            return (os.sysconf("SC_PAGE_SIZE")
+                    * os.sysconf("SC_PHYS_PAGES")) / 1024**3
     except Exception:
         pass
 
-    # Leave roughly a third of RAM for the OS and the parent process.
-    by_memory = max(1, int((total_gb * 0.6) / max(gb, 0.25)))
-    by_cores = max(1, (os.cpu_count() or 4) - 4)
-    return min(by_memory, by_cores)
+    try:  # Windows
+        import ctypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return status.ullTotalPhys / 1024**3
+    except Exception:
+        pass
+
+    return default
+
+
+def _available_cores() -> int:
+    """Cores this process may use.
+
+    Slurm hands out an allocation rather than the node, and joblib's own view
+    (`os.cpu_count()`) reports the node -- which on COMA is not enforced, so
+    over-subscribing silently steals from other jobs instead of failing.
+    """
+    import os
+
+    for name in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE", "SLURM_NTASKS"):
+        value = os.environ.get(name)
+        if value:
+            try:
+                return max(1, int(value))
+            except ValueError:
+                continue
+
+    if hasattr(os, "sched_getaffinity"):  # respects cpusets/cgroups
+        try:
+            return max(1, len(os.sched_getaffinity(0)))
+        except Exception:
+            pass
+
+    return os.cpu_count() or 4
 
 
 def _engine_worker(engine: str, engine_options: Dict[str, Any] | None):
@@ -239,6 +318,9 @@ def _engine_worker(engine: str, engine_options: Dict[str, Any] | None):
         from .scylla.run_scylla import resolve_jar, simulate_sample_scylla
 
         options = dict(engine_options or {})
+        # n_jobs sizes the fan-out; it is not a simulation parameter, and
+        # passing it on would reach the worker as an unexpected keyword.
+        options.pop("n_jobs", None)
         # Resolved once here rather than in every worker, so a missing jar
         # fails immediately instead of once per sample.
         options["jar_path"] = resolve_jar(options.pop("jar_path", None))

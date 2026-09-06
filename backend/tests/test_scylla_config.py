@@ -234,6 +234,54 @@ def test_parallel_gateways_get_no_probabilities(dataset, sim_root):
     assert sim.findall(q("parallelGateway")) == []
 
 
+def test_branching_probabilities_are_normalised(dataset):
+    """Sensitivity analysis perturbs each branch on its own, so a gateway that
+    summed to 1 in the discovered model does not stay that way.
+
+    Prosimos treats the values as relative weights and normalises internally.
+    Scylla validates that an exclusive gateway totals at most 1 and aborts the
+    entire run otherwise -- "exceeding 1 in total" killed every sample of a
+    Morris smoke run before this was normalised at emission.
+    """
+    model = json.loads(json.dumps(dataset["model"]))
+    for gateway in model["gateway_branching_probabilities"]:
+        for branch in gateway["probabilities"]:
+            branch["value"] = 0.9  # every branch high: sums well above 1
+
+    root = S.build_sim_config(model, dataset["bpmn_path"], total_cases=50,
+                              start_iso=START_ISO, seed=1)
+    sim = root.find(q("simulationConfiguration"))
+
+    checked = 0
+    for kind in ("exclusiveGateway", "inclusiveGateway"):
+        for el in sim.findall(q(kind)):
+            total = sum(float(f.findtext(q("branchingProbability")))
+                        for f in el.findall(q("outgoingSequenceFlow")))
+            checked += 1
+            assert abs(total - 1.0) < 1e-9, (
+                f"{el.get('id')} sums to {total!r}; Scylla rejects anything "
+                f"above 1")
+    assert checked, "no probabilistic gateways in the model to check"
+
+
+def test_zero_probabilities_become_a_uniform_split(dataset):
+    """A gateway perturbed to all-zero would never fire, deadlocking the run."""
+    model = json.loads(json.dumps(dataset["model"]))
+    for gateway in model["gateway_branching_probabilities"]:
+        for branch in gateway["probabilities"]:
+            branch["value"] = 0.0
+
+    root = S.build_sim_config(model, dataset["bpmn_path"], total_cases=50,
+                              start_iso=START_ISO, seed=1)
+    sim = root.find(q("simulationConfiguration"))
+
+    for el in sim.findall(q("exclusiveGateway")):
+        values = [float(f.findtext(q("branchingProbability")))
+                  for f in el.findall(q("outgoingSequenceFlow"))]
+        assert abs(sum(values) - 1.0) < 1e-9
+        assert all(v > 0 for v in values), "a branch that can never be taken"
+
+
 def test_start_event_carries_an_arrival_rate(dataset, sim_root):
     """Mandatory: without it the Scylla parser throws."""
     sim = sim_root.find(q("simulationConfiguration"))

@@ -55,6 +55,28 @@ DATASETS = {
         "json": "models/datamining/ConsultaDataMining201618_train.json",
         "cases": [5000],
     },
+    # The three BPIC logs the engine comparison runs on. Their models live
+    # outside models/ because they are also the fixtures the Scylla tests read.
+    "bpic2012": {
+        "bpmn": "../example_sensitivity_analysis_inputs/BPIC_2012/BPIC_2012_train.bpmn",
+        "json": "../example_sensitivity_analysis_inputs/BPIC_2012/BPIC_2012_train.json",
+        "cases": [3000],
+    },
+    "bpic2017": {
+        "bpmn": "../example_sensitivity_analysis_inputs/BPIC_2017/BPIC_2017_train.bpmn",
+        "json": "../example_sensitivity_analysis_inputs/BPIC_2017/BPIC_2017_train.json",
+        "cases": [3000],
+    },
+    # 1081 resources, all sharing a single GENERIC_calendar. Phase 7
+    # (within-group resource calendars) generates one parameter per resource
+    # and so perturbs that one calendar 1081 times over -- 23x the work with
+    # nothing to rank at the end. Skip phase 7 on this dataset; the other
+    # phases are unaffected.
+    "bpic2013": {
+        "bpmn": "../example_sensitivity_analysis_inputs/BPIC_2013/BPIC_2013_train.bpmn",
+        "json": "../example_sensitivity_analysis_inputs/BPIC_2013/BPIC_2013_train.json",
+        "cases": [3000],
+    },
 }
 
 # Filled in by main() once --dataset is known.
@@ -62,6 +84,12 @@ BPMN_PATH = JSON_PATH = None
 BASE_OUTPUT = TIMES_CSV = LOG_FILE = None
 CASES = None
 PREFIX = None
+
+# Which simulator runs the samples. Prosimos is the default and the reference
+# arm; "scylla" runs the same models through the translated XML configs. Output
+# folders are named per engine so the two arms never overwrite each other.
+ENGINE = "prosimos"
+ENGINE_OPTIONS = None
 
 REPLICATIONS = 1
 NUM_LEVELS = 6  # Morris only
@@ -330,6 +358,8 @@ def execute_run(phase: int, name: str, kw: dict, cases=None, replications=None) 
             replication_runs=replications,
             cases_list=cases,
             simulation_results_folder=str(folder),
+            engine=ENGINE,
+            engine_options=ENGINE_OPTIONS,
             **pipeline_kw,
         )
     except Exception as e:
@@ -405,17 +435,43 @@ def main():
                          "one Slurm array task per run")
     ap.add_argument("--list", action="store_true", help="print the numbered run list and exit")
     ap.add_argument("--smoke", action="store_true", help="tiny end-to-end test run")
+    ap.add_argument("--engine", choices=["prosimos", "scylla"], default="prosimos",
+                    help="which simulator runs the samples (default: prosimos)")
+    ap.add_argument("--jar", help="path to scylla.jar; overrides $SCYLLA_JAR")
+    ap.add_argument("--heap", default="1g",
+                    help="JVM heap per Scylla sample, e.g. 1g or 512m (default: 1g). "
+                         "Worker count is derived from this and the memory available")
+    ap.add_argument("--n-jobs", type=int,
+                    help="override the number of concurrent samples. Leave unset to "
+                         "size from the Slurm allocation, or the machine off-cluster")
     args = ap.parse_args()
 
     global BPMN_PATH, JSON_PATH, BASE_OUTPUT, TIMES_CSV, LOG_FILE, CASES, PREFIX
+    global ENGINE, ENGINE_OPTIONS
     cfg = DATASETS[args.dataset]
     PREFIX = args.dataset
     BPMN_PATH = str(BACKEND_DIR / cfg["bpmn"])
     JSON_PATH = str(BACKEND_DIR / cfg["json"])
     CASES = cfg["cases"]
-    BASE_OUTPUT = BACKEND_DIR / "output/simulation_and_sensitivity_analysis_outputs"
-    TIMES_CSV = BACKEND_DIR / f"{args.dataset}_run_times.csv"
-    LOG_FILE = BACKEND_DIR / f"{args.dataset}_batch_log.txt"
+
+    ENGINE = args.engine
+    if args.engine == "scylla":
+        ENGINE_OPTIONS = {"heap": args.heap}
+        if args.jar:
+            ENGINE_OPTIONS["jar_path"] = args.jar
+        if args.n_jobs is not None:
+            ENGINE_OPTIONS["n_jobs"] = args.n_jobs
+    elif args.n_jobs is not None:
+        ENGINE_OPTIONS = {"n_jobs": args.n_jobs}
+
+    # The two arms write to separate trees. Sharing one would let a Scylla run
+    # be skipped because a Prosimos run of the same name is already complete,
+    # and the comparison needs both to exist side by side.
+    suffix = "" if args.engine == "prosimos" else f"_{args.engine}"
+    BASE_OUTPUT = (BACKEND_DIR
+                   / f"output/simulation_and_sensitivity_analysis_outputs{suffix}")
+    TIMES_CSV = BACKEND_DIR / f"{args.dataset}{suffix}_run_times.csv"
+    LOG_FILE = BACKEND_DIR / f"{args.dataset}{suffix}_batch_log.txt"
 
     if args.list:
         for i, (phase, name, _) in enumerate(build_runs()):

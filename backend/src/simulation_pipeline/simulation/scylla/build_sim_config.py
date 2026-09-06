@@ -222,9 +222,35 @@ def _append_gateway(parent, gateway, gateway_types) -> ET.Element | None:
         return None
 
     el = ET.SubElement(parent, _q(kind), id=gid)
-    for branch in gateway["probabilities"]:
+
+    # Normalise before writing. Sensitivity analysis perturbs each branch
+    # independently, so a gateway that summed to 1 in the discovered model
+    # arrives here summing to something else. Prosimos treats the values as
+    # relative weights and normalises internally; Scylla validates that an
+    # exclusive gateway's probabilities total at most 1 and aborts the whole
+    # run otherwise -- "exceeding 1 in total" killed every sample of a Morris
+    # smoke run. Rounding alone can do it: three branches at 0.333334 sum
+    # above 1 once written to six decimals.
+    #
+    # Normalising keeps the two engines reading the same model rather than
+    # making Scylla tolerate what Prosimos already ignores.
+    values = [float(branch["value"]) for branch in gateway["probabilities"]]
+    total = sum(values)
+    if total > 0:
+        values = [v / total for v in values]
+    else:
+        # Every branch perturbed to zero: fall back to a uniform split rather
+        # than emitting a gateway that can never fire.
+        values = [1.0 / len(values)] * len(values)
+
+    # Distribute the rounding residual onto the last branch so the written
+    # figures sum to exactly 1.000000 rather than 0.999999 or 1.000001.
+    written = [round(v, 6) for v in values]
+    written[-1] = round(1.0 - sum(written[:-1]), 6)
+
+    for branch, value in zip(gateway["probabilities"], written):
         flow = ET.SubElement(el, _q("outgoingSequenceFlow"), id=branch["path_id"])
-        ET.SubElement(flow, _q("branchingProbability")).text = f"{branch['value']:.6f}"
+        ET.SubElement(flow, _q("branchingProbability")).text = f"{value:.6f}"
     return el
 
 
