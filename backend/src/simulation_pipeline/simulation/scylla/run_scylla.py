@@ -20,7 +20,9 @@ Two Scylla behaviours the caller cannot avoid:
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import signal
 import subprocess
 import tempfile
 from pathlib import Path
@@ -112,6 +114,32 @@ def resolve_java(explicit: str | None = None) -> str:
     return "java"
 
 
+
+def _kill_tree(process: subprocess.Popen) -> None:
+    """Kill a process and everything it started.
+
+    Needed because a conda `java` is a shim: it launches the real JVM as a
+    child, so killing the shim leaves the JVM running. On Windows taskkill /T
+    walks the tree; on POSIX the process was put in its own group, so signalling
+    the group reaches every descendant.
+    """
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                capture_output=True, timeout=30,
+            )
+        else:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except Exception:
+        pass  # best effort; the kill below still runs
+
+    try:
+        process.kill()
+    except Exception:
+        pass
+
+
 def run_scylla(
     jar_path: str | Path,
     configs: Dict[str, Path],
@@ -166,13 +194,42 @@ def run_scylla(
         f"--sim={configs['sim_config']}",
     ]
 
+    # Run the JVM in its own process group so a timeout can kill the whole
+    # tree.
+    #
+    # subprocess.run(timeout=...) kills only the process it started. A conda
+    # `java` is a shim that launches the real JVM as a child, so the timeout
+    # reaped the shim and left the JVM running -- measured: Python gave up
+    # after 20 s and the JVM was still alive three seconds later. On the
+    # cluster that turned every timed-out sample into a process that kept
+    # consuming a core for the rest of the job, so each chunk left 6-13 of them
+    # behind and the ones after it ran slower and timed out in turn. It also
+    # made the timeout itself unreliable: with the JVM holding the stdout pipe
+    # open, the call could hang well past its deadline.
+    creation = 0
+    preexec = None
+    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):        # Windows
+        creation = subprocess.CREATE_NEW_PROCESS_GROUP
+    elif hasattr(os, "setsid"):                                 # POSIX
+        preexec = os.setsid
+
+    process = subprocess.Popen(
+        cmd, cwd=str(work_dir),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        creationflags=creation, preexec_fn=preexec,
+    )
     try:
-        result = subprocess.run(
-            cmd, cwd=str(work_dir), capture_output=True, text=True,
-            timeout=timeout_s,
-        )
+        stdout, stderr = process.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired as exc:
+        _kill_tree(process)
+        # Drain what the pipes hold; the tree is dead, so this cannot block.
+        try:
+            process.communicate(timeout=30)
+        except Exception:
+            pass
         raise ScyllaError(f"Scylla timed out after {timeout_s}s") from exc
+
+    result = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
 
     if result.returncode != 0:
         raise ScyllaError(
