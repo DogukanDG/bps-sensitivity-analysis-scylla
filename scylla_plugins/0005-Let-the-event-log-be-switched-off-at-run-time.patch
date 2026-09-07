@@ -1,0 +1,61 @@
+From db0a5671b674aa863453de66e81c8692c0cd2423 Mon Sep 17 00:00:00 2001
+From: DogukanDG <dagtekindogukan1@gmail.com>
+Date: Mon, 7 Sep 2026 13:06:54 +0200
+Subject: [PATCH] Let the event log be switched off at run time
+
+The XES log is the largest thing a run writes: 16 MB of the 23 MB a 3000-case
+BPIC 2012 simulation produces, against 7 MB for the statistics a KPI pipeline
+actually reads. A batch of concurrent simulations therefore spends most of its
+I/O on a file nothing downstream opens, and where that write goes to a shared
+network filesystem it dominates: 28 concurrent samples measured 14.8 s each,
+against 10.3 s for a single sample on its own.
+
+-Dscylla.xes=off suppresses it. Removing the plugin from plugins_list achieves
+the same, but the log is what tests assert against, so the switch belongs at
+run time rather than at build time.
+
+Measured on one sample: 3.4 s to 2.6 s, 23.4 MB to 7.3 MB, KPIs unchanged.
+---
+ .../scylla/plugin/xeslogger/XESLogger.java    | 24 +++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/xeslogger/XESLogger.java b/src/main/java/de/hpi/bpt/scylla/plugin/xeslogger/XESLogger.java
+index b5f5936..fc766f0 100644
+--- a/src/main/java/de/hpi/bpt/scylla/plugin/xeslogger/XESLogger.java
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/xeslogger/XESLogger.java
+@@ -44,8 +44,32 @@ public class XESLogger extends OutputLoggerPluggable {
+         return "XES";
+     }
+ 
++    /**
++     * System property that suppresses the event log: {@code -Dscylla.xes=off}.
++     *
++     * The XES log is the largest thing a run writes -- 16 MB of the 23 MB a
++     * 3000-case BPIC 2012 sample produces, against 7 MB for the statistics the
++     * KPIs are actually read from. A batch of concurrent samples therefore
++     * spends most of its I/O on a file nothing downstream opens, and on a
++     * cluster that write goes to a shared network filesystem: measured, 28
++     * concurrent samples ran slower in total than a single sample on its own.
++     *
++     * Removing the plugin from plugins_list would do the same, but the log is
++     * what the plugin tests assert against, so it has to stay switchable at run
++     * time rather than at build time.
++     */
++    public static final String DISABLE_PROPERTY = "scylla.xes";
++
++    private static boolean isDisabled() {
++        return "off".equalsIgnoreCase(System.getProperty(DISABLE_PROPERTY, "on"));
++    }
++
+     public void writeToLog(SimulationModel model, String outputPathWithoutExtension) throws IOException {
+ 
++        if (isDisabled()) {
++            return;
++        }
++
+         Map<String, ProcessSimulationComponents> desmojObjectsMap = model.getDesmojObjectsMap();
+         for (String processId : desmojObjectsMap.keySet()) {
+             String fileNameWithoutExtension = model.getDesmojObjectsMap().get(processId).getCommonProcessElements()
+-- 
+2.51.2.windows.1
+
