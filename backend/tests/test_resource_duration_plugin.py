@@ -144,7 +144,7 @@ def run_scylla(model, bpmn, cases, tmp_path, **kwargs):
         result = R.simulate_sample_scylla(
             sample_id=0, sample_data=model, bpmn_path=bpmn, total_cases=cases,
             start_iso=START_ISO, jar_path=R.resolve_jar(), seed=5,
-            heap="1g", keep_output=tmp_path,
+            heap="1g", want_event_log=True, keep_output=tmp_path,
         )
     finally:
         S.build_sim_config = original

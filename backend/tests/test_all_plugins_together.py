@@ -73,7 +73,7 @@ def run(model, bpmn, tmp_path_factory):
     try:
         result = R.simulate_sample_scylla(
             sample_id=0, sample_data=model, bpmn_path=bpmn, total_cases=CASES,
-            start_iso=START_ISO, jar_path=R.resolve_jar(), seed=SEED, heap="1g",
+            start_iso=START_ISO, jar_path=R.resolve_jar(), seed=SEED, heap="1g", want_event_log=True,
             keep_output=out,
         )
     finally:

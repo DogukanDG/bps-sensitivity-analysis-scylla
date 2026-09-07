@@ -119,6 +119,7 @@ def run_scylla(
     timeout_s: int = DEFAULT_TIMEOUT_S,
     java_bin: str | None = None,
     heap: str | None = None,
+    want_event_log: bool = False,
 ) -> Path:
     """Run one simulation; return the directory Scylla wrote."""
     java_bin = resolve_java(java_bin)
@@ -128,6 +129,33 @@ def run_scylla(
     cmd = [java_bin]
     if heap:
         cmd.append(f"-Xmx{heap}")
+    # One core per JVM.
+    #
+    # A JVM sizes its GC and JIT thread pools from the machine's core count, not
+    # from what the caller intends to use. On a 128-thread compute node each of
+    # 28 concurrent samples would start ~30 GC threads of its own -- 800+
+    # threads competing for 128 cores -- and the run collapses: measured 14.8 s
+    # per sample across 28 workers, slower than the 10.3 s a single worker
+    # manages alone. The simulation itself is sequential, so one core is all a
+    # sample needs; joblib provides the parallelism across samples.
+    #
+    # SerialGC because the parallel collectors spawn their own threads
+    # regardless, and this heap is small enough that a concurrent collector buys
+    # nothing.
+    cmd += [
+        "-XX:ActiveProcessorCount=1",
+        "-XX:+UseSerialGC",
+    ]
+    # The XES event log is 16 MB of the 23 MB a 3000-case sample writes, and
+    # nothing downstream reads it -- the KPIs come from the resource-utilisation
+    # XML. Writing it costs 24% of the run and, with samples running
+    # concurrently against a shared filesystem, far more than that: on the
+    # cluster 28 concurrent samples managed 14.8 s each against the 10.3 s a
+    # single sample takes alone.
+    #
+    # The plugin tests read the log, so they pass want_event_log=True.
+    if not want_event_log:
+        cmd.append("-Dscylla.xes=off")
     cmd += [
         "-jar", str(jar_path),
         "--headless",
@@ -179,6 +207,7 @@ def simulate_sample_scylla(
     keep_output: str | Path | None = None,
     heap: str | None = None,
     java_bin: str | None = None,
+    want_event_log: bool = False,
 ) -> Dict[str, Any]:
     """Simulate one sampled configuration with Scylla.
 
@@ -203,7 +232,8 @@ def simulate_sample_scylla(
             effective_seed, buckets, n_draws, weighted,
         )
         output_dir = run_scylla(jar_path, configs, work_dir, heap=heap,
-                                java_bin=java_bin)
+                                java_bin=java_bin,
+                                want_event_log=want_event_log)
 
         rows = parse_process_rows(
             output_dir, sample_id=sample_id, expected_cases=total_cases,
