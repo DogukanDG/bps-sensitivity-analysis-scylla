@@ -77,6 +77,11 @@ def pool_id_for(task_id: str) -> str:
 # the capacity right, which is what queueing depends on.
 SHARED_POOL_ID = "resource_pool"
 
+# Separates a resource id from its copy index in an instance name, so
+# `resource_pool__10809#3` is the fourth copy of resource 10809. Anything that
+# maps an instance back to a resource has to strip this too.
+COPY_SEPARATOR = "#"
+
 
 def resource_calendar_map(model: Dict[str, Any]) -> Dict[str, str]:
     """resource id -> calendar id, flattened across all profiles."""
@@ -132,6 +137,32 @@ def build_global_config(
     return root
 
 
+def resource_amounts(model: Dict[str, Any]) -> Dict[str, int]:
+    """How many interchangeable copies of each resource the model declares.
+
+    Simod writes `amount` on every resource, and the sensitivity analysis
+    perturbs it -- that is the whole of the `is_resource_numbers` dimension. A
+    perturbed BPIC 2012 sample reaches 611 copies of 47 resources, one of them
+    13 deep.
+
+    Ignoring it, as this converter did, silently pinned the Scylla arm at one
+    copy each. That made `is_resource_numbers` unmeasurable there, and it made
+    perturbed samples genuinely infeasible: at 47 resources one sample needed
+    172 s of work per case against a 73 s arrival gap, so its queue grew without
+    bound and the run never finished. Prosimos ran the same sample in 5.3 s
+    because it honoured the 611.
+    """
+    amounts: Dict[str, int] = {}
+    for profile in model.get("resource_profiles", []):
+        for res in profile.get("resource_list", []):
+            try:
+                amount = int(res.get("amount", 1))
+            except (TypeError, ValueError):
+                amount = 1
+            amounts[res["id"]] = max(1, amount)
+    return amounts
+
+
 def all_resource_ids(model: Dict[str, Any]) -> List[str]:
     """Every distinct resource in the model, in a stable order.
 
@@ -157,6 +188,8 @@ def _append_shared_pool(parent, model, res_to_cal, res_to_cost,
                         calendars) -> ET.Element:
     """One pool holding every resource once, each keeping its own calendar."""
     resource_ids = all_resource_ids(model)
+    amounts = resource_amounts(model)
+    total = sum(amounts.get(rid, 1) for rid in resource_ids)
 
     costs = [res_to_cost.get(rid, 0.0) for rid in resource_ids]
     default_cost = f"{(sum(costs) / len(costs)) if costs else 0.0:.6f}"
@@ -164,22 +197,30 @@ def _append_shared_pool(parent, model, res_to_cal, res_to_cost,
     el = ET.SubElement(parent, _q("dynamicResource"), {
         "id": SHARED_POOL_ID,
         "name": SHARED_POOL_ID,
-        "defaultQuantity": str(len(resource_ids)),
+        "defaultQuantity": str(total),
         "defaultCost": default_cost,
         "defaultTimeUnit": DEFAULT_COST_TIME_UNIT,
     })
 
     for rid in resource_ids:
-        attrs = {"name": f"{SHARED_POOL_ID}__{rid}"}
         cal = res_to_cal.get(rid)
-        if cal in calendars:
-            # Per-instance timetable: this is what survives pooling, and it is
-            # why is_resource_calendars stays meaningful on the Scylla side.
-            attrs["timetableId"] = cal
         cost = res_to_cost.get(rid)
-        if cost is not None:
-            attrs["cost"] = f"{cost:.6f}"
-        ET.SubElement(el, _q("instance"), attrs)
+        # One instance per declared copy. Copies are interchangeable -- same
+        # calendar, same cost, same durations -- so they differ only in the
+        # suffix, and eligibility matches on the resource id either way.
+        count = amounts.get(rid, 1)
+        for copy in range(count):
+            name = f"{SHARED_POOL_ID}__{rid}"
+            if count > 1:
+                name = f"{name}{COPY_SEPARATOR}{copy}"
+            attrs = {"name": name}
+            if cal in calendars:
+                # Per-instance timetable: this is what survives pooling, and it
+                # is why is_resource_calendars stays meaningful here.
+                attrs["timetableId"] = cal
+            if cost is not None:
+                attrs["cost"] = f"{cost:.6f}"
+            ET.SubElement(el, _q("instance"), attrs)
 
     return el
 
@@ -226,11 +267,15 @@ def validate_global_config(root: ET.Element, model: Dict[str, Any]) -> None:
     if SHARED_POOL_ID not in pools:
         raise ValueError(f"shared resource pool {SHARED_POOL_ID!r} missing")
 
-    # Capacity must equal the number of real resources; anything larger means
-    # a resource was counted once per activity it can perform.
+    # Capacity must equal the declared headcount -- the sum of each resource's
+    # `amount`, not the number of distinct resources. The check exists to catch
+    # a resource being counted once per activity it can perform, which inflated
+    # BPIC 2012 from 47 to 191; it must still allow the copies `amount` asks
+    # for, which a perturbed sample takes to 611.
     pool = next(el for el in root.iter(_q("dynamicResource"))
                 if el.get("id") == SHARED_POOL_ID)
-    expected_capacity = len(all_resource_ids(model))
+    amounts = resource_amounts(model)
+    expected_capacity = sum(amounts.get(rid, 1) for rid in all_resource_ids(model))
     if int(pool.get("defaultQuantity")) != expected_capacity:
         raise ValueError(
             f"pool capacity {pool.get('defaultQuantity')} does not match the "

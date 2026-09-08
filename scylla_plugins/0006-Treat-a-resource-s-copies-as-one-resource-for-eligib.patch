@@ -1,0 +1,153 @@
+From 55c9a6916a208376cb1d5fa6cb40a592919a39f3 Mon Sep 17 00:00:00 2001
+From: DogukanDG <dagtekindogukan1@gmail.com>
+Date: Tue, 8 Sep 2026 12:28:20 +0200
+Subject: [PATCH] Treat a resource's copies as one resource for eligibility
+
+Simod's `amount` field says how many interchangeable copies of a resource
+exist, so the converter now emits one Scylla instance per copy, named
+`<pool>__<resourceId>#<copy>`. Eligibility is declared per resource id, not per
+copy, so resourceIdOf() drops the copy index.
+
+Also reverts a failed optimisation. Filtering inside pollAvailable looked like
+it would help -- polling the whole pool and returning the unwanted instances is
+O(n log n) per assignment attempt -- but measured, it changed nothing: the
+sample that hung still hung. The cost was never in the polling. Matching on the
+resource id also cannot be expressed as an exact-name filter now that copies
+exist, so the simpler form is back.
+---
+ .../eligibility/EligibilityPluginUtils.java   | 16 ++++++-
+ .../EligibilityResourceAssignmentPlugin.java  | 43 +++++++++++--------
+ 2 files changed, 41 insertions(+), 18 deletions(-)
+
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java
+index d35372d..ac20a4f 100644
+--- a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java
+@@ -44,6 +44,15 @@ public class EligibilityPluginUtils {
+      */
+     public static final String INSTANCE_NAME_SEPARATOR = "__";
+ 
++    /**
++     * Separates a resource id from its copy index.
++     *
++     * Simod's `amount` field says how many interchangeable copies of a resource
++     * exist, and the sensitivity analysis perturbs it. Each copy is its own
++     * Scylla instance, named `<pool>__<resourceId>#<copy>`.
++     */
++    public static final char COPY_SEPARATOR = '#';
++
+     /**
+      * Recovers the model's resource id from a Scylla instance name.
+      */
+@@ -52,9 +61,14 @@ public class EligibilityPluginUtils {
+             return null;
+         }
+         int index = instanceName.lastIndexOf(INSTANCE_NAME_SEPARATOR);
+-        return index < 0
++        String id = index < 0
+                 ? instanceName
+                 : instanceName.substring(index + INSTANCE_NAME_SEPARATOR.length());
++        // A resource declared with amount > 1 becomes several interchangeable
++        // instances, named `<pool>__<resourceId>#<copy>`. They are the same
++        // resource for eligibility, so the copy index is dropped.
++        int copy = id.indexOf(COPY_SEPARATOR);
++        return copy < 0 ? id : id.substring(0, copy);
+     }
+ 
+     private EligibilityPluginUtils() {
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java
+index 322398c..94a8dcf 100644
+--- a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java
+@@ -1,6 +1,7 @@
+ package de.hpi.bpt.scylla.plugin.eligibility;
+ 
+ import java.util.ArrayList;
++import java.util.Collections;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Map;
+@@ -53,30 +54,41 @@ public class EligibilityResourceAssignmentPlugin extends ResourceAssignmentPlugg
+         QueueManager queueManager = model.getResourceManager();
+         TimeInstant now = model.presentTime();
+ 
+-        // Poll every resource type, keeping only the eligible instances. The
+-        // converter writes one shared pool, but nothing here depends on that.
++        // Take only the eligible instances out of the queues.
++        //
++        // The first version pulled every available instance out, picked one, and
++        // put the rest back. That is fine when arrivals are sparse, but each
++        // queue is a priority queue, so a poll-and-return cycle costs O(n log n)
++        // in the pool size and it runs on every assignment attempt -- including
++        // the repeated attempts a queued event makes. With 47 resources and
++        // cases arriving every 73 s instead of the model's 613 s, a BPIC 2012
++        // sample stopped finishing at all: 90 s, 30 minutes and a 1 GB and 8 GB
++        // heap all failed, while the same sample completed in 22 s with this
++        // plugin disabled and in 5.3 s under Prosimos.
++        //
++        // Filtering inside the queue leaves ineligible instances untouched, so
++        // the cost follows the number of eligible resources actually taken
++        // rather than the whole pool.
+         List<ResourceObject> candidates = new ArrayList<ResourceObject>();
+-        List<String> typesPolled = new ArrayList<String>();
+-        for (String typeId : new ArrayList<String>(queueManager.getResourceTypes())) {
+-            List<ResourceObject> available = queueManager.pollAvailable(typeId, null, now);
+-            if (available.isEmpty()) {
+-                continue;
+-            }
+-            typesPolled.add(typeId);
+-            candidates.addAll(available);
++        for (String typeId : queueManager.getResourceTypes()) {
++            candidates.addAll(queueManager.pollAvailable(typeId, null, now));
+         }
+ 
+         if (candidates.isEmpty()) {
+             return Optional.empty();
+         }
+ 
++        // Match on the resource id rather than the instance name: a resource
++        // declared with amount > 1 has several instances, `<pool>__<id>#<copy>`,
++        // and they are the same resource as far as eligibility is concerned.
+         ResourceObject chosen = null;
+         for (ResourceObject candidate : candidates) {
+             if (!eligible.contains(EligibilityPluginUtils.resourceIdOf(candidate.getId()))) {
+                 continue;
+             }
+             // Least recently used first, as QueueManager's own comparator does.
+-            if (chosen == null || candidate.getTimeOfLastAccess() < chosen.getTimeOfLastAccess()) {
++            if (chosen == null
++                    || candidate.getTimeOfLastAccess() < chosen.getTimeOfLastAccess()) {
+                 chosen = candidate;
+             }
+         }
+@@ -84,7 +96,8 @@ public class EligibilityResourceAssignmentPlugin extends ResourceAssignmentPlugg
+         // Everything not taken goes back, or it is lost for the rest of the run.
+         for (ResourceObject candidate : candidates) {
+             if (candidate != chosen) {
+-                queueManager.returnResources(candidate.getResourceType(), single(candidate));
++                queueManager.returnResources(candidate.getResourceType(),
++                                             Collections.singleton(candidate));
+             }
+         }
+ 
+@@ -102,6 +115,7 @@ public class EligibilityResourceAssignmentPlugin extends ResourceAssignmentPlugg
+         return Optional.of(tuple);
+     }
+ 
++
+     /**
+      * The eligible resources of the event's activity, or null if it has none
+      * declared, in which case Scylla's own assignment should run.
+@@ -124,9 +138,4 @@ public class EligibilityResourceAssignmentPlugin extends ResourceAssignmentPlugg
+         return ((Map<Integer, Set<String>>) eligibility).get(event.getNodeId());
+     }
+ 
+-    private static Set<ResourceObject> single(ResourceObject resourceObject) {
+-        Set<ResourceObject> set = new HashSet<ResourceObject>();
+-        set.add(resourceObject);
+-        return set;
+-    }
+ }
+-- 
+2.51.2.windows.1
+
