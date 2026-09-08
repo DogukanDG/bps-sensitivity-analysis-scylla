@@ -18,6 +18,7 @@ Two Scylla behaviours shape the code:
 from __future__ import annotations
 
 import random
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 from xml.etree import ElementTree as ET
@@ -117,6 +118,117 @@ def resource_weights(
     return [min(w, ceiling) for w in raw]
 
 
+
+# How much slack the end date gets over the time the work itself needs.
+# The horizon only has to be finite; overshooting costs nothing but a few
+# unused availability events, while undershooting truncates the run.
+DEFAULT_HORIZON_FACTOR = 10.0
+
+
+def _weekly_hours(calendar: Dict[str, Any]) -> float:
+    """Hours a calendar is open per week."""
+    total = 0.0
+    for period in calendar.get("time_periods", []):
+        try:
+            begin = [int(x) for x in period["beginTime"].split(":")[:2]]
+            end = [int(x) for x in period["endTime"].split(":")[:2]]
+        except (KeyError, ValueError):
+            continue
+        total += ((end[0] * 60 + end[1]) - (begin[0] * 60 + begin[1])) / 60.0
+    return max(total, 0.0)
+
+
+def simulation_end(model: Dict[str, Any], total_cases: int, start_iso: str,
+                   factor: float = DEFAULT_HORIZON_FACTOR) -> str | None:
+    """When the simulation should stop, as an ISO timestamp.
+
+    Scylla treats `endDateTime` as optional, and without it
+    `SimulationUtils.scheduleNextResourceAvailableEvent` has no termination
+    condition: every resource-availability event schedules the next one, so a
+    run keeps generating them into an unbounded future even after the cases are
+    done. That is what made some samples never finish -- stack sampling put the
+    engine in exactly that function, and adding an end date took one from "not
+    finished after 120 s" to 0.9 s.
+
+    Two things bound how long a run legitimately needs, and the horizon has to
+    clear both:
+
+      - **Arrivals.** The last case arrives after roughly `mean gap x cases`.
+      - **Capacity.** The work may take far longer to drain than to arrive. One
+        resource on a five-hour-a-week calendar needs 40 weeks to serve 200
+        cases of one hour each -- an arrivals-only horizon cut that run off at
+        six weeks and lost four fifths of its cases.
+
+    Returns None when neither can be read, in which case the attribute is
+    omitted and Scylla behaves as it did before.
+    """
+    horizons = []
+
+    arrival = model.get("arrival_time_distribution") or {}
+    params = arrival.get("distribution_params") or []
+    cases = max(1, int(total_cases))
+    if params:
+        try:
+            gap = float(params[0]["value"])
+        except (KeyError, TypeError, ValueError):
+            gap = 0.0
+        if gap > 0:
+            span = gap * cases
+            # Cases can only arrive while the arrival calendar is open, so the
+            # wall-clock span is longer than the sum of the gaps. A calendar
+            # open four hours a week stretches a 0.2-day arrival span to ten
+            # days; ignoring that cut runs off mid-arrival and lost cases.
+            arrival_hours = sum(_weekly_hours({"time_periods": [period]})
+                                for period in model.get("arrival_time_calendar") or [])
+            if arrival_hours > 0:
+                span *= 168.0 / arrival_hours
+            horizons.append(span)
+
+    # Work divided by the capacity available to do it, in wall-clock seconds.
+    calendars = {c.get("id"): c for c in model.get("resource_calendars", [])}
+    open_hours = 0.0
+    for profile in model.get("resource_profiles", []):
+        for res in profile.get("resource_list", []):
+            calendar = calendars.get(res.get("calendar"))
+            hours = _weekly_hours(calendar) if calendar else 168.0
+            try:
+                amount = max(1, int(res.get("amount", 1)))
+            except (TypeError, ValueError):
+                amount = 1
+            open_hours += hours * amount
+
+    work = 0.0
+    for task in model.get("task_resource_distribution", []):
+        resources = task.get("resources") or []
+        means = []
+        for res in resources:
+            values = D.values_of(res)
+            if values:
+                means.append(values[0])
+        if means:
+            work += sum(means) / len(means)
+
+    if work > 0 and open_hours > 0:
+        # Wall-clock time to do `work * cases` seconds of work, given resources
+        # that are collectively open `open_hours` per week: capacity delivers
+        # open_hours/168 seconds of work per second of real time.
+        horizons.append(work * cases * 168.0 / open_hours)
+
+    if not horizons:
+        return None
+
+    seconds = max(horizons) * factor
+    # A week's floor: a model whose arrivals are seconds apart still needs long
+    # enough for its weekly calendars to come round.
+    seconds = max(seconds, 7 * 24 * 3600)
+
+    try:
+        start = datetime.fromisoformat(start_iso)
+    except ValueError:
+        return None
+    return (start + timedelta(seconds=seconds)).isoformat()
+
+
 def build_sim_config(
     model: Dict[str, Any],
     bpmn_path: str | Path,
@@ -129,6 +241,7 @@ def build_sim_config(
     arrival_calendar: bool = True,
     resource_durations: bool = True,
     eligibility: bool = True,
+    horizon_factor: float = DEFAULT_HORIZON_FACTOR,
 ) -> ET.Element:
     """Build the definitions/simulationConfiguration tree.
 
@@ -141,14 +254,18 @@ def build_sim_config(
     rng = random.Random(seed)
 
     root = ET.Element(_q("definitions"), {"targetNamespace": "http://www.hpi.de"})
-    sim = ET.SubElement(root, _q("simulationConfiguration"), {
+    attrs = {
         "id": "bps_sim",
         "processRef": bpmn["process_id"],
         # The real case count. SimuBridge clamps this to 5000; we do not, and
         # the ceiling is tested empirically instead.
         "processInstances": str(int(total_cases)),
         "startDateTime": start_iso,
-    })
+    }
+    end_iso = simulation_end(model, total_cases, start_iso, horizon_factor)
+    if end_iso:
+        attrs["endDateTime"] = end_iso
+    sim = ET.SubElement(root, _q("simulationConfiguration"), attrs)
 
     for task in model["task_resource_distribution"]:
         _append_task(sim, task, rng, buckets, n_draws, weighted,

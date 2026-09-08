@@ -117,7 +117,6 @@ GROUP_FLAGS = (
     "is_resource_numbers",
 )
 
-
 def build_runs():
     """Build the full ordered run list: (phase, folder_name, kwargs)."""
     runs = []
