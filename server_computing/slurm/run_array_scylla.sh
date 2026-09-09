@@ -58,6 +58,10 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export PYTHONIOENCODING=utf-8
+# Slurm writes stdout to a file, so Python block-buffers it and progress only
+# appears when a buffer fills -- which makes a running job look stuck and hides
+# the lines that say how it sized itself.
+export PYTHONUNBUFFERED=1
 
 source ~/miniforge3/etc/profile.d/conda.sh
 conda activate bps

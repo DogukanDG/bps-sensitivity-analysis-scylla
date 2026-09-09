@@ -219,10 +219,11 @@ def _n_jobs_for(engine: str, engine_options: Dict[str, Any] | None) -> int:
     # simply takes twenty times longer. `#SBATCH -n 32` asks for 32 one-core
     # tasks and leaves SLURM_CPUS_PER_TASK at 1, which lands exactly here.
     print(f"[scylla] {n} worker(s): {cores} core(s), {total_gb:.0f} GB, "
-          f"{gb:g}g heap (by memory {by_memory}, by cores {by_cores})")
+          f"{gb:g}g heap (by memory {by_memory}, by cores {by_cores})",
+          flush=True)
     if n == 1 and cores <= 1:
         print("[scylla] WARNING: running one sample at a time. If this is a "
-              "cluster job, ask for --cpus-per-task rather than -n.")
+              "cluster job, ask for --cpus-per-task rather than -n.", flush=True)
     return n
 
 
