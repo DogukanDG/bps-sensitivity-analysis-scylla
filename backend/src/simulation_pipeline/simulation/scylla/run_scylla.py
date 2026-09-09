@@ -184,6 +184,17 @@ def run_scylla(
     # The plugin tests read the log, so they pass want_event_log=True.
     if not want_event_log:
         cmd.append("-Dscylla.xes=off")
+
+    # Resource utilization is the most expensive thing Scylla computes and we do
+    # not read it: parse_process_rows takes flow_time, effective and waiting, all
+    # of which are computed separately. The cost is a per-instance walk of the
+    # timetable across the whole horizon, so it grows with resource count times
+    # horizon length rather than with the simulation. Measured on the sample that
+    # kept timing out (3000 cases, 611 instances, 164-day horizon): the
+    # simulation finished in 80 s and the statistics had not finished 800 s
+    # later; with this off the same run takes 59 s. The twelve process metrics
+    # are bit-identical either way.
+    cmd.append("-Dscylla.resourceAvailability=off")
     cmd += [
         "-jar", str(jar_path),
         "--headless",
