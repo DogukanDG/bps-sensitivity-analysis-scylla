@@ -2,7 +2,8 @@
 #SBATCH --job-name=bps-scylla
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
-#SBATCH -n 32
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
 #SBATCH --mem=64G
 #SBATCH --time=23:30:00
 #SBATCH --partition=compute
@@ -24,6 +25,11 @@
 # --- What differs from the Prosimos arm ---
 #
 # Scylla is a JVM per sample, not an in-process call. Two consequences:
+#
+# 0. The allocation asks for one task with 32 cores, not 32 tasks. `-n 32` gets
+#    32 single-core tasks, and Slurm then sets SLURM_CPUS_PER_TASK=1 -- which is
+#    the first variable the worker sizing reads, so the whole run goes serial
+#    without saying so. Measured: a t=64 run took 26 minutes at one worker.
 #
 # 1. Memory, not cores, sets the fan-out. run_experiments sizes the worker
 #    count from SLURM_MEM_PER_NODE and the per-sample heap, so --mem above is a
@@ -85,7 +91,7 @@ fi
 echo "host      : $(hostname)"
 echo "array job : $SLURM_ARRAY_JOB_ID  task $SLURM_ARRAY_TASK_ID"
 echo "dataset   : ${DATASET:?set DATASET=production or DATASET=datamining}"
-echo "cores (-n): ${SLURM_NTASKS:-unset}"
+echo "cores      : ${SLURM_CPUS_PER_TASK:-unset} per task"
 echo "memory    : ${SLURM_MEM_PER_NODE:-unset} MB"
 echo "jar       : $SCYLLA_JAR"
 echo "started   : $(date)"
