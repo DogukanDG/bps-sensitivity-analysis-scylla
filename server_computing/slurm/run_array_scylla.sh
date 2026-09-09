@@ -31,6 +31,12 @@
 #    the first variable the worker sizing reads, so the whole run goes serial
 #    without saying so. Measured: a t=64 run took 26 minutes at one worker.
 #
+# 0b. A single Scylla sample uses about four cores, so a task wants roughly
+#    cores/4 workers, not cores-4: measured on a 32-core allocation, 8 workers
+#    and 48 workers finish the same batch in the same time, and the extra forty
+#    only contend. Smaller tasks running more of the array at once therefore
+#    beat one wide task. SCYLLA_NJOBS overrides the sizing.
+#
 # 1. Memory, not cores, sets the fan-out. run_experiments sizes the worker
 #    count from SLURM_MEM_PER_NODE and the per-sample heap, so --mem above is a
 #    real limit here rather than a formality: 64G with a 1g heap gives about 28
@@ -105,6 +111,7 @@ python run_experiments.py \
     --dataset "$DATASET" \
     --engine scylla \
     --heap "${SCYLLA_HEAP:-1g}" \
+    ${SCYLLA_NJOBS:+--n-jobs "$SCYLLA_NJOBS"} \
     --index "$SLURM_ARRAY_TASK_ID"
 
 echo
