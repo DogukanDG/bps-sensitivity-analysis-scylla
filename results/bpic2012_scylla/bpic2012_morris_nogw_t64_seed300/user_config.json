@@ -1,0 +1,20 @@
+{
+  "is_sobol": false,
+  "is_groups": true,
+  "is_gateway": false,
+  "is_arrival_distribution": true,
+  "is_arrival_calendar": true,
+  "is_tasks_resources": true,
+  "is_resource_calendars": true,
+  "is_resource_numbers": true,
+  "n_samples": null,
+  "calc_second_order": false,
+  "n_trajectories": 64,
+  "num_levels": 6,
+  "replication_runs": 1,
+  "cases_list": [
+    3000
+  ],
+  "simulation_results_folder": "/storage/home/dogukandagtekin/bps_clean/backend/output/simulation_and_sensitivity_analysis_outputs_scylla/bpic2012_morris_nogw_t64_seed300",
+  "seed": 300
+}

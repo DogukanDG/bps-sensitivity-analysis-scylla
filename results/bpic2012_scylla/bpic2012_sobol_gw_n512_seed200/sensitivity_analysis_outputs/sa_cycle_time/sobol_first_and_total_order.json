@@ -1,0 +1,50 @@
+[
+  {
+    "group": "Gateways",
+    "cases": 3000,
+    "S1": null,
+    "S1_conf": null,
+    "ST": null,
+    "ST_conf": null
+  },
+  {
+    "group": "Tasks and Resources Distributions",
+    "cases": 3000,
+    "S1": null,
+    "S1_conf": null,
+    "ST": null,
+    "ST_conf": null
+  },
+  {
+    "group": "Arrival Calendar",
+    "cases": 3000,
+    "S1": null,
+    "S1_conf": null,
+    "ST": null,
+    "ST_conf": null
+  },
+  {
+    "group": "Resource Calendars",
+    "cases": 3000,
+    "S1": null,
+    "S1_conf": null,
+    "ST": null,
+    "ST_conf": null
+  },
+  {
+    "group": "Arrival Distribution",
+    "cases": 3000,
+    "S1": null,
+    "S1_conf": null,
+    "ST": null,
+    "ST_conf": null
+  },
+  {
+    "group": "Resource Numbers",
+    "cases": 3000,
+    "S1": null,
+    "S1_conf": null,
+    "ST": null,
+    "ST_conf": null
+  }
+]

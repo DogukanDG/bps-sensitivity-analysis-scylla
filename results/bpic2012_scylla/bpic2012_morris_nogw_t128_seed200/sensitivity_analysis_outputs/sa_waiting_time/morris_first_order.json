@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Resource Calendars",
+    "cases": 3000,
+    "mu": -489126.3255555557,
+    "mu_star": 489126.73281250015,
+    "mu_star_conf": 329815.37247756746,
+    "sigma": 2250523.396177987
+  },
+  {
+    "name": "Resource Numbers",
+    "cases": 3000,
+    "mu": -448703.4977647569,
+    "mu_star": 448716.8346223958,
+    "mu_star_conf": 609426.7363726794,
+    "sigma": 3070581.152832244
+  },
+  {
+    "name": "Tasks and Resources Distributions",
+    "cases": 3000,
+    "mu": 323698.6024348958,
+    "mu_star": 323723.77484809025,
+    "mu_star_conf": 371638.79698898364,
+    "sigma": 2302416.9406697964
+  },
+  {
+    "name": "Arrival Distribution",
+    "cases": 3000,
+    "mu": -117646.22508680556,
+    "mu_star": 141131.87218750003,
+    "mu_star_conf": 73706.70323522741,
+    "sigma": 410006.8520834409
+  },
+  {
+    "name": "Arrival Calendar",
+    "cases": 3000,
+    "mu": 79626.03686197918,
+    "mu_star": 82721.12688802085,
+    "mu_star_conf": 21781.108351853953,
+    "sigma": 127745.03906828689
+  }
+]

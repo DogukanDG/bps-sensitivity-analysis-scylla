@@ -1,0 +1,52 @@
+{
+  "is_sobol": true,
+  "is_groups": true,
+  "cases_list": [
+    3000
+  ],
+  "problem": {
+    "num_vars": 5,
+    "names": [
+      "Tasks and Resources Distributions",
+      "Arrival Calendar",
+      "Resource Calendars",
+      "Arrival Distribution",
+      "Resource Numbers"
+    ],
+    "bounds": [
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ]
+    ],
+    "groups": [
+      "Tasks and Resources Distributions",
+      "Arrival Calendar",
+      "Resource Calendars",
+      "Arrival Distribution",
+      "Resource Numbers"
+    ],
+    "sample_scaled": true
+  },
+  "calc_second_order": false,
+  "samples": null,
+  "num_levels": null,
+  "seed": 300,
+  "conf_level": null
+}

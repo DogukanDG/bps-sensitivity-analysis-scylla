@@ -1,0 +1,184 @@
+{
+  "is_sobol": true,
+  "is_groups": true,
+  "cases_list": [
+    3000
+  ],
+  "problem": {
+    "num_vars": 27,
+    "names": [
+      "Gateway_1",
+      "Gateway_2",
+      "Gateway_3",
+      "Gateway_4",
+      "Gateway_5",
+      "Gateway_6",
+      "Gateway_7",
+      "Gateway_8",
+      "Gateway_9",
+      "Gateway_10",
+      "Gateway_11",
+      "Gateway_12",
+      "Gateway_13",
+      "Gateway_14",
+      "Gateway_15",
+      "Gateway_16",
+      "Gateway_17",
+      "Gateway_18",
+      "Gateway_19",
+      "Gateway_20",
+      "Gateway_21",
+      "Gateway_22",
+      "Tasks and Resources Distributions",
+      "Arrival Calendar",
+      "Resource Calendars",
+      "Arrival Distribution",
+      "Resource Numbers"
+    ],
+    "bounds": [
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ],
+      [
+        0.05,
+        0.95
+      ]
+    ],
+    "groups": [
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Gateways",
+      "Tasks and Resources Distributions",
+      "Arrival Calendar",
+      "Resource Calendars",
+      "Arrival Distribution",
+      "Resource Numbers"
+    ],
+    "sample_scaled": true
+  },
+  "calc_second_order": false,
+  "samples": null,
+  "num_levels": null,
+  "seed": 300,
+  "conf_level": null
+}
