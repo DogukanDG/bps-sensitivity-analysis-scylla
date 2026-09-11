@@ -473,7 +473,8 @@ git am --keep-cr /path/to/bps_clean/scylla_plugins/*.patch
 
 # clean first: the POM installs its bundled dependencies during `clean`,
 # and they are not on Maven Central
-docker run --rm -v "$PWD":/app -w /app maven:3.9-eclipse-temurin-11     sh -c 'mvn -q clean; mvn -q package -DskipTests'
+docker run --rm -v "$PWD":/app -w /app maven:3.9-eclipse-temurin-11 \
+    sh -c 'mvn -q clean; mvn -q package -DskipTests'
 
 # then put it where the pipeline looks
 cp target/scylla-0.0.1-SNAPSHOT.jar /path/to/bps_clean/spike/scylla.jar
@@ -597,7 +598,7 @@ a comparison:
   replaced by one load-weighted mixture.
 - **Three plugins fill real gaps** in Scylla — arrival calendars,
   resource-dependent durations, and resource eligibility. They live in
-  `scylla_plugins/` as patches, and the jar in `spike/` already includes them.
+  `scylla_plugins/` as patches, and the build above applies all of them.
 - **Three KPIs are not reproducible.** `idle_cycle_time`, `idle_processing_time`
   and `idle_time` are Prosimos-specific calendar-aware measures and come back
   empty; `cycle_time`, `processing_time` and `waiting_time` are comparable.
