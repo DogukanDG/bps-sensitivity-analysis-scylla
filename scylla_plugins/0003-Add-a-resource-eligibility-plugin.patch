@@ -1,7 +1,7 @@
 From e9610d7f906b14d573a3011f70a5b04de7643ede Mon Sep 17 00:00:00 2001
 From: DogukanDG <dagtekindogukan1@gmail.com>
 Date: Thu, 3 Sep 2026 13:45:11 +0200
-Subject: [PATCH 3/7] Add a resource eligibility plugin
+Subject: [PATCH 3/8] Add a resource eligibility plugin
 
 Scylla can express which resources exist and how many, or which resources
 may perform which activity, but not both. A list of resources on an activity

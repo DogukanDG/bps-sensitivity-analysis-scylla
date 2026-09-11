@@ -12,11 +12,10 @@ event log does not have to be parsed at all:
       <waiting>       ...                              -> waiting_time
       <off_timetable> ...                              -> resource-paused time
 
-Mapping to Prosimos, and what it costs:
+Mapping to Prosimos:
 
-    cycle_time      = flow_time       start to end, wall clock -- same definition
-    processing_time = effective       time actually worked; verified against the
-                                      sum of per-activity durations
+    cycle_time      = flow_time       same definition
+    processing_time = effective       verified against per-activity durations
     waiting_time    = waiting         NOT the same definition, see below
 
 `waiting` is summed per activity instance, not over the case: StatisticsLogger
@@ -26,23 +25,13 @@ the reported waiting total (88.0M s) exceed the flow time total (71.5M s),
 which is impossible for a wall-clock measure. Prosimos's waiting_time is
 wall-clock per case.
 
-It is emitted anyway, because the sensitivity analysis compares how a metric
-*responds* to parameter changes rather than its absolute level, and this is
-still a monotone measure of queueing. But it is not comparable to the Prosimos
-number case for case, and `check_consistency()` flags runs where the two
-definitions diverge most. Sensitivity results for the Scylla arm should lead
-with cycle_time.
+Emitted anyway -- sensitivity analysis compares how a metric responds, not its
+level, and this is still monotone in queueing -- but not comparable case for
+case. `check_consistency()` flags the worst divergences; lead with cycle_time.
 
-Prosimos's three idle_* metrics are calendar-aware in a way Scylla does not
-reproduce: `idle_time` counts time a case sat while its resource was
-off-shift, and `idle_cycle_time` / `idle_processing_time` are cycle and
-processing time with those pauses folded back in. Scylla reports
-`off_timetable`, which is the closest analogue but is not defined identically.
-Rather than pass off an approximation as the real metric, those three are
-emitted as NaN and the Scylla arm's sensitivity analysis runs on the three
-metrics that do map. This is a documented scope limit, not an oversight; the
-proposal records it and the T1 test is where the three mapped metrics get
-checked against Prosimos directly.
+Prosimos's three idle_* metrics fold in time a case sat while its resource was
+off-shift. Scylla's nearest equivalent, `off_timetable`, is not defined the same
+way, so rather than pass off an approximation the three are emitted as NaN.
 
 There is no `count` field in the XML, so it is recovered as total / avg, which
 reproduces the case count exactly (verified against the per-instance list).

@@ -89,22 +89,12 @@ def resource_weights(
 ) -> List[float]:
     """Throughput-proportional weights: 1 / mean duration, ratio-capped.
 
-    **Not used by default, because the assumption behind it is false.**
-
-    The reasoning was that a faster resource finishes sooner, frees up sooner,
-    and so takes on more work -- meaning a pooled duration should be weighted
-    towards the fast end. Measured against Prosimos on BPIC 2012 (500 cases,
-    one activity with 42 resources), it is not what happens:
-
-        fastest resource (mean    6.7 s) -> 4.8% of executions
-        slowest resource (mean 1060.7 s) -> 2.7% of executions
-
-    Near-uniform. Prosimos allocates by availability, not by speed, so the
-    correct pooled duration is the *unweighted* mixture. Weighting cut pooled
-    durations by 11-65% and made agreement with Prosimos worse, not better.
-
-    Kept because the comparison is worth reporting, and because `weighted=True`
-    is how the effect was measured rather than assumed.
+    **Off by default: the assumption behind it is false.** A faster resource
+    was expected to take on more work, but Prosimos allocates by availability,
+    not speed -- on a 42-resource BPIC 2012 activity the fastest (6.7 s) took
+    4.8% of executions and the slowest (1060.7 s) took 2.7%. Weighting cut
+    pooled durations by 11-65% and made agreement worse. Kept so the comparison
+    can be reproduced with `weighted=True`.
     """
     means = [D.values_of(res)[0] for res in task["resources"]]
     positive = [m for m in means if m and m > 0]
@@ -142,25 +132,15 @@ def simulation_end(model: Dict[str, Any], total_cases: int, start_iso: str,
                    factor: float = DEFAULT_HORIZON_FACTOR) -> str | None:
     """When the simulation should stop, as an ISO timestamp.
 
-    Scylla treats `endDateTime` as optional, and without it
-    `SimulationUtils.scheduleNextResourceAvailableEvent` has no termination
-    condition: every resource-availability event schedules the next one, so a
-    run keeps generating them into an unbounded future even after the cases are
-    done. That is what made some samples never finish -- stack sampling put the
-    engine in exactly that function, and adding an end date took one from "not
-    finished after 120 s" to 0.9 s.
+    `endDateTime` is optional to Scylla, and without it
+    `scheduleNextResourceAvailableEvent` never terminates: each availability
+    event schedules the next one forever. That is why some samples never
+    finished; an end date took one from >120 s to 0.9 s.
 
-    Two things bound how long a run legitimately needs, and the horizon has to
-    clear both:
-
-      - **Arrivals.** The last case arrives after roughly `mean gap x cases`.
-      - **Capacity.** The work may take far longer to drain than to arrive. One
-        resource on a five-hour-a-week calendar needs 40 weeks to serve 200
-        cases of one hour each -- an arrivals-only horizon cut that run off at
-        six weeks and lost four fifths of its cases.
-
-    Returns None when neither can be read, in which case the attribute is
-    omitted and Scylla behaves as it did before.
+    The horizon has to clear both arrivals (`mean gap x cases`) and capacity,
+    which can be far longer -- one resource on a five-hour week needs 40 weeks
+    for 200 one-hour cases, and an arrivals-only horizon lost four fifths of
+    them. None when neither can be read, and the attribute is then omitted.
     """
     horizons = []
 
@@ -340,17 +320,11 @@ def _append_gateway(parent, gateway, gateway_types) -> ET.Element | None:
 
     el = ET.SubElement(parent, _q(kind), id=gid)
 
-    # Normalise before writing. Sensitivity analysis perturbs each branch
-    # independently, so a gateway that summed to 1 in the discovered model
-    # arrives here summing to something else. Prosimos treats the values as
-    # relative weights and normalises internally; Scylla validates that an
-    # exclusive gateway's probabilities total at most 1 and aborts the whole
-    # run otherwise -- "exceeding 1 in total" killed every sample of a Morris
-    # smoke run. Rounding alone can do it: three branches at 0.333334 sum
-    # above 1 once written to six decimals.
-    #
-    # Normalising keeps the two engines reading the same model rather than
-    # making Scylla tolerate what Prosimos already ignores.
+    # Sensitivity analysis perturbs each branch independently, so probabilities
+    # arrive summing to something other than 1. Prosimos normalises internally;
+    # Scylla aborts the run -- "exceeding 1 in total" killed every sample of a
+    # Morris smoke run. Rounding alone reaches it: three branches at 0.333334
+    # exceed 1 at six decimals.
     values = [float(branch["value"]) for branch in gateway["probabilities"]]
     total = sum(values)
     if total > 0:

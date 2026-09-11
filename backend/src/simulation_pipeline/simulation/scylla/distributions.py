@@ -109,21 +109,14 @@ _MAX_REJECTION_ROUNDS = 200
 
 
 def draw_clipped(dist: Dict[str, Any], rng: random.Random, n: int) -> List[float]:
-    """n draws, truncated to the recorded bounds the way Prosimos truncates.
+    """n draws, truncated the way Prosimos truncates: reject and redraw.
 
-    Prosimos *rejects and redraws* out-of-range values
-    (`probability_distributions.evaluate_distribution_function`, and
-    `DurationDistribution.generate_sample` in pix-framework), so the result is
-    the conditional distribution given the bounds. Clipping instead -- pinning
-    out-of-range draws to the nearest bound -- piles mass onto the endpoints and
-    is a materially different distribution.
-
-    It matters here because the bounds are tight. On the representative
-    BPIC 2012 gamma, 39% of raw draws fall outside [4500, 17820]: 33% below and
-    6% above. Clipping gave a mean of 8157 s against Prosimos's 9134 s, an 11%
-    understatement that no amount of bucket resolution would have fixed.
-
-    The name is kept for compatibility; the behaviour is rejection sampling.
+    Prosimos redraws out-of-range values (`pix-framework`,
+    `DurationDistribution.generate_sample`), giving the conditional distribution
+    given the bounds. Clipping to the nearest bound instead piles mass on the
+    endpoints, and the bounds are tight enough for that to matter: on the
+    representative BPIC 2012 gamma, 39% of raw draws fall outside
+    [4500, 17820], and clipping understated the mean by 11%.
     """
     lo, hi = bounds_of(dist)
     out: List[float] = []
@@ -195,13 +188,11 @@ def append_histogram(parent: ET.Element, samples: Sequence[float],
     a genuinely discrete distribution over the values given -- so the emitted
     values are the only durations that can ever occur.
 
-    Buckets are equal-*frequency* (quantile), not equal-width. These durations
-    have very long tails: on the largest BPIC 2012 activity the maximum is 218x
-    the median, so equal-width bucketing spends its whole range on outliers.
-    Measured there, equal-width bucketing left only 32 of 100 buckets occupied
-    and overstated the mean by 16%; equal-frequency reproduces it to well under
-    1% at the same bucket count. Each bucket instead carries the mean of the
-    samples inside it, which makes the overall mean exact by construction.
+    Buckets are equal-*frequency*, not equal-width: these tails are long -- the
+    largest BPIC 2012 activity has a maximum 218x its median -- and equal-width
+    bucketing there left 32 of 100 buckets occupied and overstated the mean by
+    16%. Each bucket carries the mean of its samples, making the overall mean
+    exact by construction.
 
     Frequencies are normalised by the parser
     (`SimulationConfigurationParser.java:292`), so raw counts are fine.
@@ -227,14 +218,11 @@ def append_histogram(parent: ET.Element, samples: Sequence[float],
     tail = min(max(buckets // 10, 1), n)
     body, extremes = ordered[: n - tail], ordered[n - tail:]
 
-    # Accumulate into {value -> frequency} before emitting. Scylla parses these
-    # into a HashMap<Double, Double> with entries.put(value, frequency)
-    # (`EmpiricalDistribution.java:11`), which *overwrites* rather than adds, so
-    # two entries sharing a value silently collapse to one and the mass of the
-    # first is lost. That is easy to hit: a pool of resources with identical
-    # fixed durations produces identical bucket means. Measured on a 38-resource
-    # BPIC 2012 activity, 100 emitted entries became 75 and the mean fell from
-    # 1095 s to 556 s. Merging here keeps the total mass intact.
+    # Scylla puts these into a HashMap, overwriting rather than adding
+    # (`EmpiricalDistribution.java:11`), so entries sharing a value collapse and
+    # lose their mass. Resources with identical fixed durations produce
+    # identical bucket means, which is how a 38-resource BPIC 2012 activity lost
+    # 25 of 100 entries and half its mean. Merge first.
     merged: Dict[float, int] = {}
 
     def add(value: float, count: int) -> None:

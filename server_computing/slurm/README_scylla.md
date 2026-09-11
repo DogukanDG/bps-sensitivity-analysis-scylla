@@ -101,7 +101,7 @@ Measured on the cluster, BPIC 2012 at 3000 cases:
 |---|---|
 | One Scylla sample alone | ~31 s |
 | Scylla, workers saturated | **~1.5 s** |
-| Prosimos (from the earlier campaign's timings) | ~0.22 s |
+| Prosimos, same conditions | ~0.22 s |
 
 So Scylla costs roughly seven times a Prosimos sample once both are running
 flat out. Phase 1 alone for one dataset (12 Morris runs, 17,280 simulations) is

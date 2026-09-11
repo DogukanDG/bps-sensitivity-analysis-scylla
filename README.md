@@ -1,7 +1,8 @@
 # BPS Sensitivity Analysis Tool
 
-Please refer to the following link to read the full thesis:
-https://drive.google.com/file/d/181ZLqbQ1oLn72g--1Dfp4H08hHyRK0lQ/view?usp=sharing
+Discovers a business process simulation model from an event log, perturbs its
+parameters, simulates each sampled configuration, and reports which parameters
+the KPIs are sensitive to.
 
 Samples are simulated with **Prosimos** by default. They can also be run through
 **Scylla**, a second, Java-based engine, so the same sensitivity analysis can be
@@ -533,6 +534,39 @@ so the two arms never overwrite each other. The layout inside is identical, and
 the sensitivity indices are written as
 `sensitivity_analysis_outputs/sa_<kpi>/morris_first_order.json`.
 
+#### On Windows
+
+Everything above runs on Windows unchanged; only the shell syntax differs. In
+PowerShell:
+
+```powershell
+conda activate bps
+cd backend
+
+# optional -- without it, spike\scylla.jar is used
+$env:SCYLLA_JAR = "C:\path	o\scylla.jar"
+
+python run_experiments.py --dataset bpic2012 --engine scylla --smoke
+python run_experiments.py --dataset bpic2012 --engine scylla --index 0
+```
+
+Two Windows-specific notes:
+
+- **Check `java -version` inside the activated environment.** A system-wide
+  Java 8 is common on Windows and shadows nothing until the environment is
+  active, so the version outside it says nothing useful. Scylla built for 11
+  fails on 8 with `UnsupportedClassVersionError`.
+- **Building the jar needs Docker Desktop running**, and in Git Bash the volume
+  mount needs `MSYS_NO_PATHCONV=1` so the path is not rewritten:
+
+  ```bash
+  MSYS_NO_PATHCONV=1 docker run --rm -v "/c/path/to/scylla":/app -w /app       maven:3.9-eclipse-temurin-11 sh -c 'mvn -q clean; mvn -q package -DskipTests'
+  ```
+
+A full 3000-case sample takes about a minute on a laptop, so a whole phase is a
+cluster job rather than a local one. Local runs are for `--smoke` and for single
+`--index` runs while checking something.
+
 #### On the cluster
 
 **Once**, copy the jar and its libraries together — the manifest's `Class-Path`
@@ -585,10 +619,23 @@ Two environment variables the script honours: `SCYLLA_JAR` (jar location) and
 
 #### How the conversion works, and what it costs
 
-Simod models are written for Prosimos. The converter
-(`backend/src/simulation_pipeline/simulation/scylla/`) rewrites each sampled
-model into the two XML files Scylla expects, runs one JVM per sample, and reads
-the KPIs back into the same table the Prosimos arm produces.
+Simod models are written for Prosimos. The converter rewrites each sampled model
+into the two XML files Scylla expects, runs one JVM per sample, and reads the
+KPIs back into the same table the Prosimos arm produces.
+
+It lives in `backend/src/simulation_pipeline/simulation/scylla/`:
+
+| File | What it does |
+|---|---|
+| `build_global_config.py` | Resources, calendars and costs → `global_config.xml`. One `<instance>` per declared copy, so a resource with `amount: 5` becomes five. |
+| `build_sim_config.py` | Arrival rate, task durations, gateway probabilities → `sim_config.xml`. Also computes the simulation end date, without which Scylla schedules availability events forever. |
+| `distributions.py` | Prosimos distribution dicts → Scylla's nine supported ones. `lognorm` and `gamma` have no equivalent and are discretised into histograms. |
+| `run_scylla.py` | Writes the configs to a temp directory, invokes the JVM, kills the whole process tree on timeout, and finds the output directory Scylla names for itself. |
+| `parse_results.py` | Scylla's `_resourceutilization.xml` → the same rows Prosimos produces. |
+
+`simulate_sample_scylla()` in `run_scylla.py` is the entry point, and it mirrors
+the Prosimos `simulate_sample()` signature exactly — which is why `--engine`
+switches between them with nothing else changing.
 
 Not everything survives the translation, and the differences matter when reading
 a comparison:

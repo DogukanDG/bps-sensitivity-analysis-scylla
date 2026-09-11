@@ -1,7 +1,7 @@
 From cf17d19224770b298d95d4ee94c5b94ad4fe61d1 Mon Sep 17 00:00:00 2001
 From: DogukanDG <dagtekindogukan1@gmail.com>
 Date: Tue, 1 Sep 2026 16:53:02 +0200
-Subject: [PATCH 2/7] Add a resource-dependent task duration plugin
+Subject: [PATCH 2/8] Add a resource-dependent task duration plugin
 
 Scylla gives an activity a single duration regardless of who performs it.
 Process models discovered by Simod in differentiated mode give every resource

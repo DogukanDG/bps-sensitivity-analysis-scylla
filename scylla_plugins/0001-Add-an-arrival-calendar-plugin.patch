@@ -1,7 +1,7 @@
 From 72d410758cb752dacce216a3a3aeaa49c15d073a Mon Sep 17 00:00:00 2001
 From: DogukanDG <dagtekindogukan1@gmail.com>
 Date: Tue, 1 Sep 2026 16:22:22 +0200
-Subject: [PATCH 1/7] Add an arrival calendar plugin
+Subject: [PATCH 1/8] Add an arrival calendar plugin
 
 Scylla schedules case arrivals from an inter-arrival distribution alone, with no
 notion of when arrivals are possible. Process models discovered by Simod also

@@ -50,7 +50,7 @@ elements, so `is_resource_calendars` stays meaningful.
 now lost as well. Scylla cannot express both eligibility and correct capacity,
 and capacity is what queueing depends on. See finding 7: eligibility turns out
 to be the main remaining source of divergence, so this trade is worth stating
-explicitly in the write-up rather than burying.
+explicitly rather than burying.
 
 ### 2. Load weighting rested on a false assumption
 
@@ -117,7 +117,7 @@ every calendar with 24/7 moved `cycle_time` from +121% to +10%, which looked
 like calendars. It was not — 24/7 also removes the *interaction* between limited
 availability and restricted eligibility, and it is the eligibility half that
 matters (finding 7). A single experiment with two variables moving at once was
-not enough to attribute anything, and this is worth remembering for the write-up.
+not enough to attribute anything, and worth remembering when reporting results.
 
 ### 5. Scylla silently drops histogram entries that share a value
 
@@ -435,7 +435,7 @@ Open: whether to keep the resource-duration plugin enabled. Enabled, the model
 is faithful to what Simod discovered but the engines diverge more. Disabled,
 pooling hides the difference and the numbers agree more closely for the wrong
 reason. The first is more honest; the second is easier to compare. Worth a
-decision before the comparison study, and worth stating in the write-up either
+decision before the comparison, and worth stating either
 way.
 
 ## Environment

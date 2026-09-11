@@ -213,11 +213,9 @@ def _n_jobs_for(engine: str, engine_options: Dict[str, Any] | None) -> int:
     by_cores = max(1, cores - 4)
     n = min(by_memory, by_cores)
 
-    # Say what was chosen and why. A serial run is a plausible answer here --
-    # a laptop, a one-core allocation -- so it cannot be an error, but it is
-    # never what a cluster job wants, and it is otherwise invisible: the run
-    # simply takes twenty times longer. `#SBATCH -n 32` asks for 32 one-core
-    # tasks and leaves SLURM_CPUS_PER_TASK at 1, which lands exactly here.
+    # One worker is legitimate on a laptop but never what a cluster job wants,
+    # and it is invisible -- the run just takes twenty times longer. `#SBATCH
+    # -n 32` asks for 32 one-core tasks and lands exactly here.
     print(f"[scylla] {n} worker(s): {cores} core(s), {total_gb:.0f} GB, "
           f"{gb:g}g heap (by memory {by_memory}, by cores {by_cores})",
           flush=True)

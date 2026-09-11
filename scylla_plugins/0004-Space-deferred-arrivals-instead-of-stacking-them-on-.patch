@@ -1,7 +1,7 @@
 From 2e913dce2e463f8e4f826d7ad42b2086eb43e58d Mon Sep 17 00:00:00 2001
 From: DogukanDG <dagtekindogukan1@gmail.com>
 Date: Fri, 4 Sep 2026 10:51:32 +0200
-Subject: [PATCH 4/7] Space deferred arrivals instead of stacking them on the
+Subject: [PATCH 4/8] Space deferred arrivals instead of stacking them on the
  window opening
 
 The plugin moved each late arrival to the opening of the next window

@@ -21,11 +21,8 @@ What survives and what does not:
            activity (build_sim_config)
     lost   eligibility, which resources may perform which activity
 
-Pooling per activity instead was the first attempt and is wrong: a resource
-that works on four activities becomes four independent instances. Capacity came
-out 4.1x too high on both models (191 vs 47 on BPIC 2012, 433 vs 105 on
-BPIC 2017), because 91% and 96% of their resources appear in more than one
-activity. T1 caught it -- see the note on SHARED_POOL_ID below.
+Pooling per activity instead was the first attempt and is wrong; see
+SHARED_POOL_ID.
 
 Requires a Scylla build that includes commit f9671cb ("Fix #72: default
 timetables for named resource instances are ignored"). The copy bundled with
@@ -59,22 +56,12 @@ def pool_id_for(task_id: str) -> str:
     return f"pool_{task_id}"
 
 
-# One pool for the whole process, holding every resource once.
-#
-# Pooling per activity looked natural but silently multiplies capacity: a
-# resource that works on four activities became four independent instances, so
-# total capacity was 191 instead of 47 on BPIC 2012 and 433 instead of 105 on
-# BPIC 2017 -- 4.1x in both. 91% of BPIC 2012 resources and 96% of BPIC 2017
-# resources appear in more than one activity, so almost none of the contention
-# between activities survived.
-#
-# T1 exposed it: with one resource and two concurrently-enabled activities,
-# Prosimos serialised them (120 s) while Scylla ran them at once (60 s).
-# A single shared pool restores the contention, at the cost of losing which
-# resources are eligible for which activity -- Scylla has no way to express
-# both. Eligibility already had to be given up for durations (they are pooled
-# per activity); this extends the same compromise to availability, and keeps
-# the capacity right, which is what queueing depends on.
+# One pool for the whole process, holding every resource once. Pooling per
+# activity instead multiplies capacity 4.1x -- 191 instances against 47 on BPIC
+# 2012, 433 against 105 on BPIC 2017 -- because most resources work on more than
+# one activity, and then almost no contention between activities survives. T1
+# caught it: Prosimos serialised two concurrent activities (120 s), Scylla ran
+# them at once (60 s).
 SHARED_POOL_ID = "resource_pool"
 
 # Separates a resource id from its copy index in an instance name, so

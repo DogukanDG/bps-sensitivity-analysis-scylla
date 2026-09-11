@@ -1,0 +1,144 @@
+From f3a71f43070b0ded61bc27ab11cfb30f048de1bb Mon Sep 17 00:00:00 2001
+From: DogukanDG <dagtekindogukan1@gmail.com>
+Date: Fri, 11 Sep 2026 12:00:28 +0200
+Subject: [PATCH 8/8] Trim comments that restate their own code
+
+Javadoc on five constants repeated the constant name; the eligibility helper
+said the same thing twice, once above the method and once inside it; and the
+arrival-calendar header explained its measurement twice over.
+
+The measurements stay -- they are why the same wrong guess does not get made
+again -- but each is now stated once.
+---
+ .../ArrivalCalendarPluginUtils.java           |  1 -
+ .../ArrivalCalendarSchedulingPlugin.java      | 28 +++++++------------
+ .../eligibility/EligibilityPluginUtils.java   | 17 ++---------
+ .../ResourceDurationPluginUtils.java          |  4 ---
+ 4 files changed, 12 insertions(+), 38 deletions(-)
+
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarPluginUtils.java b/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarPluginUtils.java
+index 5f88dfb..dd2c99f 100644
+--- a/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarPluginUtils.java
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarPluginUtils.java
+@@ -15,7 +15,6 @@ package de.hpi.bpt.scylla.plugin.arrivalcalendar;
+  */
+ public class ArrivalCalendarPluginUtils {
+ 
+-    /** Plugin name. */
+     public static final String PLUGIN_NAME = "arrivalCalendar";
+ 
+     /** Key under which the parsed calendar is stored as a simulation extension. */
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarSchedulingPlugin.java b/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarSchedulingPlugin.java
+index f9ea7bc..74877a2 100644
+--- a/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarSchedulingPlugin.java
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/arrivalcalendar/ArrivalCalendarSchedulingPlugin.java
+@@ -22,26 +22,18 @@ import desmoj.core.simulator.TimeSpan;
+  * Defers a case that would arrive outside the arrival calendar to the next open
+  * window.
+  *
+- * <b>Deferring, not dropping.</b> A case whose draw lands on a Sunday night is
+- * pushed to Monday morning rather than discarded. That keeps the number of
+- * simulated cases equal to {@code processInstances}, which is what makes runs
+- * comparable across engines and across configurations -- Prosimos compresses
+- * the same case count into the open hours, so this is the closer match.
++ * <b>Deferring, not dropping.</b> A case drawn for Sunday night is pushed to
++ * Monday morning, keeping the simulated count equal to {@code processInstances}
++ * -- Prosimos compresses the same count into the open hours.
+  *
+- * <b>Queued, not stacked.</b> Deferring each arrival on its own puts every case
+- * that missed a window at the exact instant it opens. With a run starting on a
+- * Sunday and a one-hour Sunday window, all 100 cases of a BPIC 2012 run arrived
+- * in the same second, and the queue that produced dominated every measurement
+- * taken from it. Deferred arrivals are laid out one after another instead,
+- * spaced by the gaps the generation events already carry, which is what
+- * Prosimos does when it compresses the same case count into the open hours.
++ * <b>Queued, not stacked.</b> Deferring each arrival independently puts every
++ * missed case at the instant the window opens: with a Sunday start and a
++ * one-hour window, all 100 cases of a BPIC 2012 run arrived in the same second
++ * and the resulting queue dominated every measurement. They are laid out one
++ * after another instead, spaced by the gaps the generation events carry.
+  *
+- * The cost is that arrivals still bunch after a long closure, since a backlog
+- * has to be worked off. That is inherent to deferring rather than dropping, and
+- * belongs in any write-up of the results.
+- *
+- * The calendar arithmetic is not new: DateTimeUtils already locates the current
+- * or next window for resource calendars, and this reuses it.
++ * Arrivals still bunch after a long closure, since a backlog has to be worked
++ * off; that is inherent to deferring rather than dropping.
+  */
+ public class ArrivalCalendarSchedulingPlugin extends ProcessInstanceGenerationEventPluggable {
+ 
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java
+index ac20a4f..96f7bec 100644
+--- a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityPluginUtils.java
+@@ -20,19 +20,10 @@ package de.hpi.bpt.scylla.plugin.eligibility;
+  */
+ public class EligibilityPluginUtils {
+ 
+-    /** Plugin name. */
+     public static final String PLUGIN_NAME = "resourceEligibility";
+-
+-    /** Key under which the parsed eligibility sets are stored. */
+     public static final String ELIGIBILITY_KEY = "eligibleResources";
+-
+-    /** Element wrapping the eligible resources, as a child of a task. */
+     public static final String ELEMENT_NAME = "eligibleResources";
+-
+-    /** Element naming one eligible resource. */
+     public static final String ITEM_ELEMENT_NAME = "eligibleResource";
+-
+-    /** Attribute holding the resource id. */
+     public static final String RESOURCE_ID_ATTRIBUTE = "resourceId";
+ 
+     /**
+@@ -53,9 +44,7 @@ public class EligibilityPluginUtils {
+      */
+     public static final char COPY_SEPARATOR = '#';
+ 
+-    /**
+-     * Recovers the model's resource id from a Scylla instance name.
+-     */
++    /** Recovers the model's resource id from a Scylla instance name. */
+     public static String resourceIdOf(String instanceName) {
+         if (instanceName == null) {
+             return null;
+@@ -64,9 +53,7 @@ public class EligibilityPluginUtils {
+         String id = index < 0
+                 ? instanceName
+                 : instanceName.substring(index + INSTANCE_NAME_SEPARATOR.length());
+-        // A resource declared with amount > 1 becomes several interchangeable
+-        // instances, named `<pool>__<resourceId>#<copy>`. They are the same
+-        // resource for eligibility, so the copy index is dropped.
++        // Copies are the same resource for eligibility.
+         int copy = id.indexOf(COPY_SEPARATOR);
+         return copy < 0 ? id : id.substring(0, copy);
+     }
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/resourceduration/ResourceDurationPluginUtils.java b/src/main/java/de/hpi/bpt/scylla/plugin/resourceduration/ResourceDurationPluginUtils.java
+index c80b04a..324f039 100644
+--- a/src/main/java/de/hpi/bpt/scylla/plugin/resourceduration/ResourceDurationPluginUtils.java
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/resourceduration/ResourceDurationPluginUtils.java
+@@ -15,19 +15,15 @@ package de.hpi.bpt.scylla.plugin.resourceduration;
+  */
+ public class ResourceDurationPluginUtils {
+ 
+-    /** Plugin name. */
+     public static final String PLUGIN_NAME = "resourceDuration";
+ 
+-    /** Key under which the parsed per-resource durations are stored. */
+     public static final String RESOURCE_DURATIONS_KEY = "resourceDurations";
+ 
+     /** Element wrapping the per-resource durations, as a child of a task. */
+     public static final String ELEMENT_NAME = "resourceDurations";
+ 
+-    /** Element holding one resource's distribution. */
+     public static final String ITEM_ELEMENT_NAME = "resourceDuration";
+ 
+-    /** Attribute naming the resource a distribution belongs to. */
+     public static final String RESOURCE_ID_ATTRIBUTE = "resourceId";
+ 
+     /**
+-- 
+2.51.2.windows.1
+

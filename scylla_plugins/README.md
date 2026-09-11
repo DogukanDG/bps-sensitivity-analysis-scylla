@@ -1,6 +1,6 @@
 # Scylla plugins — source patches
 
-Three plugins written against `bptlab/scylla`, plus four fixes, kept here as
+Three plugins written against `bptlab/scylla`, plus five follow-ups, kept here as
 patches because that repository is not ours to push to. The working tree they came from is a local
 clone; these files are the durable copy.
 
@@ -13,6 +13,7 @@ clone; these files are the durable copy.
 | `0005-Let-the-event-log-be-switched-off-at-run-time.patch` | `-Dscylla.xes=off`: the XES log was 16 MB a sample and nothing read it |
 | `0006-Treat-a-resource-s-copies-as-one-resource-for-eligib.patch` | Fixes 0003: `<pool>__id#copy` names were not matching the eligible set |
 | `0007-Stop-computing-resource-utilization-nothing-reads.patch` | `-Dscylla.resourceAvailability=off`: per-instance availability walks the whole horizon and cost more than the simulation — one sample went from a 900 s timeout to 54 s |
+| `0008-Trim-comments-that-restate-their-own-code.patch` | Comment-only; no behaviour change |
 
 The commit messages carry the reasoning and the measurements; the adapter
 README (`backend/src/simulation_pipeline/simulation/scylla/README.md`) has the
@@ -45,7 +46,7 @@ Three details, each load-bearing:
   `clean` runs, so that fails the same way.
 - **`libs/` travels with the jar.** The manifest's `Class-Path` is relative.
 
-Verified: all seven apply cleanly onto `5159b53` with the command above.
+Verified: all eight apply cleanly onto `5159b53` with the command above.
 
 ## Scope of the change
 

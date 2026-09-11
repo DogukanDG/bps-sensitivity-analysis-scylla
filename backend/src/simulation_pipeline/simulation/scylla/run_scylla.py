@@ -4,8 +4,7 @@ Invoke Scylla on a generated configuration and collect the KPI rows.
 One simulation per subprocess. A long-lived JVM driving `SimulationManager`
 directly would remove the ~0.5 s startup, but the spike measured a 3000-case
 run at 1.58 s wall including that startup -- faster than the Prosimos arm --
-so the added complexity is not justified yet. Phase 4 revisits it with a
-measurement rather than a guess.
+so the added complexity is not justified yet.
 
 Two Scylla behaviours the caller cannot avoid:
 
@@ -34,7 +33,6 @@ from .build_global_config import build_global_config, validate_global_config
 from .build_sim_config import build_sim_config, read_bpmn, validate_sim_config
 from .parse_results import parse_process_rows
 
-# Scylla's own output directories are named with this prefix.
 _OUTPUT_PREFIX = "output_"
 
 DEFAULT_TIMEOUT_S = 900
@@ -157,43 +155,25 @@ def run_scylla(
     cmd = [java_bin]
     if heap:
         cmd.append(f"-Xmx{heap}")
-    # One core per JVM.
-    #
-    # A JVM sizes its GC and JIT thread pools from the machine's core count, not
-    # from what the caller intends to use. On a 128-thread compute node each of
-    # 28 concurrent samples would start ~30 GC threads of its own -- 800+
-    # threads competing for 128 cores -- and the run collapses: measured 14.8 s
-    # per sample across 28 workers, slower than the 10.3 s a single worker
-    # manages alone. The simulation itself is sequential, so one core is all a
-    # sample needs; joblib provides the parallelism across samples.
-    #
-    # SerialGC because the parallel collectors spawn their own threads
-    # regardless, and this heap is small enough that a concurrent collector buys
-    # nothing.
+    # A JVM sizes its thread pools from the machine, not from the allocation, so
+    # 28 concurrent samples on a 128-thread node start 800+ GC threads between
+    # them and each sample slows to 14.8 s against the 10.3 s one takes alone.
+    # The simulation is sequential; joblib provides the parallelism.
     cmd += [
         "-XX:ActiveProcessorCount=1",
         "-XX:+UseSerialGC",
     ]
-    # The XES event log is 16 MB of the 23 MB a 3000-case sample writes, and
-    # nothing downstream reads it -- the KPIs come from the resource-utilisation
-    # XML. Writing it costs 24% of the run and, with samples running
-    # concurrently against a shared filesystem, far more than that: on the
-    # cluster 28 concurrent samples managed 14.8 s each against the 10.3 s a
-    # single sample takes alone.
-    #
-    # The plugin tests read the log, so they pass want_event_log=True.
+    # The XES log is 16 MB of the 23 MB a 3000-case sample writes, costs 24% of
+    # the run, and nothing reads it -- the KPIs come from the resource-
+    # utilisation XML. The plugin tests do read it, and pass want_event_log.
     if not want_event_log:
         cmd.append("-Dscylla.xes=off")
 
-    # Resource utilization is the most expensive thing Scylla computes and we do
-    # not read it: parse_process_rows takes flow_time, effective and waiting, all
-    # of which are computed separately. The cost is a per-instance walk of the
-    # timetable across the whole horizon, so it grows with resource count times
-    # horizon length rather than with the simulation. Measured on the sample that
-    # kept timing out (3000 cases, 611 instances, 164-day horizon): the
-    # simulation finished in 80 s and the statistics had not finished 800 s
-    # later; with this off the same run takes 59 s. The twelve process metrics
-    # are bit-identical either way.
+    # Resource utilization walks each instance's timetable across the whole
+    # horizon, so it costs instances x horizon regardless of how much simulating
+    # there is. At 3000 cases, 611 instances and 164 days the simulation ended at
+    # 80 s and this had not finished 800 s later; without it the run takes 59 s.
+    # Nothing reads it, and the twelve process metrics are bit-identical.
     cmd.append("-Dscylla.resourceAvailability=off")
     cmd += [
         "-jar", str(jar_path),
@@ -205,18 +185,11 @@ def run_scylla(
         f"--sim={configs['sim_config']}",
     ]
 
-    # Run the JVM in its own process group so a timeout can kill the whole
-    # tree.
-    #
-    # subprocess.run(timeout=...) kills only the process it started. A conda
-    # `java` is a shim that launches the real JVM as a child, so the timeout
-    # reaped the shim and left the JVM running -- measured: Python gave up
-    # after 20 s and the JVM was still alive three seconds later. On the
-    # cluster that turned every timed-out sample into a process that kept
-    # consuming a core for the rest of the job, so each chunk left 6-13 of them
-    # behind and the ones after it ran slower and timed out in turn. It also
-    # made the timeout itself unreliable: with the JVM holding the stdout pipe
-    # open, the call could hang well past its deadline.
+    # Its own process group, so a timeout kills the whole tree. A conda `java`
+    # is a shim that forks the real JVM, and subprocess's timeout reaps only the
+    # shim: the JVM survived and kept a core for the rest of the job, 6-13 of
+    # them per chunk, each making the next sample more likely to time out too.
+    # Holding the stdout pipe open also let the call outlive its own deadline.
     creation = 0
     preexec = None
     if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):        # Windows
