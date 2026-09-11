@@ -2,3 +2,7 @@
 *.bpmn -text
 *.json -text
 *.sh text eol=lf
+
+# Patch files carry exact bytes, CRLF included -- `git am --keep-cr` matches
+# context literally, so any line-ending conversion makes them stop applying.
+*.patch -text

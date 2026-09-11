@@ -3,6 +3,11 @@
 Please refer to the following link to read the full thesis:
 https://drive.google.com/file/d/181ZLqbQ1oLn72g--1Dfp4H08hHyRK0lQ/view?usp=sharing
 
+Samples are simulated with **Prosimos** by default. They can also be run through
+**Scylla**, a second, Java-based engine, so the same sensitivity analysis can be
+repeated and the two compared — see
+[Module 4](#module-4-scylla--running-the-same-experiments-on-a-second-engine).
+
 ## Installation
 
 There are two ways to install and run the BPS Sensitivity Analysis Tool: using Docker (recommended) or local installation.
@@ -256,6 +261,9 @@ The tool consists of three modules, typically used in sequence:
 
 Each module can also be run independently.
 
+A fourth, optional module repeats step 2 on a **second simulation engine**
+(Scylla) so the analysis can be checked for engine dependence.
+
 ---
 
 ### Module 1: SIMOD – Model Discovery
@@ -428,6 +436,144 @@ Results are saved under:
 ```
 
 ---
+
+---
+
+### Module 4: Scylla — running the same experiments on a second engine
+
+Everything above runs on **Prosimos**. The same models can also be simulated
+with **Scylla**, a Java discrete-event simulator, so a sensitivity analysis can
+be repeated on a second engine and the two compared. Nothing about the sampling
+or the analysis changes — only which simulator runs each sample.
+
+Use it when the question is *"does this result depend on the simulator?"* If you
+just want sensitivity indices, stay on Prosimos: a sample costs about seven
+times less and needs no Java.
+
+#### What you need
+
+**Java 11.** Scylla's `pom.xml` targets 11; an older JVM fails at startup with
+`UnsupportedClassVersionError`, a newer one is fine.
+
+```bash
+conda install -c conda-forge openjdk=11
+```
+
+**The jar.** It is *not* in this repository — it is a 27 MB binary built from a
+patched clone of [bptlab/scylla](https://github.com/bptlab/scylla), and the
+patches live in `scylla_plugins/` as `.patch` files. Build it once:
+
+```bash
+# clone upstream and apply our patches on top of 5159b53
+git clone https://github.com/bptlab/scylla && cd scylla
+git checkout 5159b53
+git am --keep-cr /path/to/bps_clean/scylla_plugins/*.patch
+#     ^^^^^^^^^ required: the tracked files use CRLF, and without this
+#               the patch context will not match
+
+# clean first: the POM installs its bundled dependencies during `clean`,
+# and they are not on Maven Central
+docker run --rm -v "$PWD":/app -w /app maven:3.9-eclipse-temurin-11     sh -c 'mvn -q clean; mvn -q package -DskipTests'
+
+# then put it where the pipeline looks
+cp target/scylla-0.0.1-SNAPSHOT.jar /path/to/bps_clean/spike/scylla.jar
+cp -r target/libs /path/to/bps_clean/spike/
+```
+
+The manifest's `Class-Path` is relative, so **`scylla.jar` and `libs/` must stay
+side by side**. `SCYLLA_JAR` points at a jar elsewhere; without it,
+`spike/scylla.jar` is used.
+
+Check the setup before running anything long:
+
+```bash
+cd backend
+python run_experiments.py --dataset bpic2012 --engine scylla --smoke
+```
+
+That runs 24 samples at 100 cases and takes a few seconds. If it prints
+`SMOKE TEST RESULT: success`, the engine works.
+
+#### Running experiments
+
+The only new flag is `--engine scylla`:
+
+```bash
+cd backend
+
+# what runs exist, and their numbers
+python run_experiments.py --dataset bpic2012 --engine scylla --list
+
+# one run
+python run_experiments.py --dataset bpic2012 --engine scylla --index 0
+
+# a whole phase
+python run_experiments.py --dataset bpic2012 --engine scylla --phase 1
+```
+
+Registered datasets: `bpic2012`, `bpic2017`, `bpic2013`, `production`,
+`datamining`.
+
+Useful extras:
+
+| Flag | Meaning |
+|---|---|
+| `--heap 1g` | JVM heap per sample |
+| `--n-jobs N` | how many samples run at once (default: sized from cores and memory) |
+| `--jar PATH` | a jar other than `spike/scylla.jar` |
+
+Results land in a **separate tree** from the Prosimos ones:
+
+```
+output/simulation_and_sensitivity_analysis_outputs_scylla/
+```
+
+so the two arms never overwrite each other. The layout inside is identical, and
+the sensitivity indices are written as
+`sensitivity_analysis_outputs/sa_<kpi>/morris_first_order.json`.
+
+#### On the cluster
+
+```bash
+# one-time: copy the jar and its libs together
+scp -r spike/scylla.jar spike/libs user@cluster.ginkgo-project.de:~/scylla/
+
+# then, on the cluster
+cd server_computing/slurm
+mkdir -p logs
+DATASET=bpic2012 sbatch --array=0-11%2 run_array_scylla.sh
+```
+
+`run_array_scylla.sh` carries the Java and sizing setup. `%2` throttles to two
+concurrent array tasks, which is polite on a shared cluster.
+
+Two environment variables the script honours: `SCYLLA_JAR` (jar location) and
+`SCYLLA_NJOBS` (worker count, overriding the automatic sizing).
+
+#### How the conversion works, and what it costs
+
+Simod models are written for Prosimos. The converter
+(`backend/src/simulation_pipeline/simulation/scylla/`) rewrites each sampled
+model into the two XML files Scylla expects, runs one JVM per sample, and reads
+the KPIs back into the same table the Prosimos arm produces.
+
+Not everything survives the translation, and the differences matter when reading
+a comparison:
+
+- **Per-resource durations collapse.** Scylla reads a list of resources on an
+  activity as *all of them at once*, so the per-resource distributions are
+  replaced by one load-weighted mixture.
+- **Three plugins fill real gaps** in Scylla — arrival calendars,
+  resource-dependent durations, and resource eligibility. They live in
+  `scylla_plugins/` as patches, and the jar in `spike/` already includes them.
+- **Three KPIs are not reproducible.** `idle_cycle_time`, `idle_processing_time`
+  and `idle_time` are Prosimos-specific calendar-aware measures and come back
+  empty; `cycle_time`, `processing_time` and `waiting_time` are comparable.
+
+**Read `backend/src/simulation_pipeline/simulation/scylla/README.md` before
+interpreting any comparison.** It documents every measured difference between
+the engines, including where they still disagree and why — findings that change
+how the numbers should be read, not implementation notes.
 
 ## Architecture & System Flow
 

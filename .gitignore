@@ -29,3 +29,12 @@ backend/simod_pool/runs/
 # Per-run artifacts written by run_experiments.py
 *_run_times.csv
 *_batch_log.txt
+
+# Working notes: planning documents, migration proposals, session summaries.
+# Kept on disk and out of the repository -- they record how decisions were
+# reached, which dates quickly, while the READMEs carry what the code does now.
+PLANNING_*.md
+SCYLLA_PROPOSAL.md
+SCYLLA_IMPLEMENTATION_PLAN.md
+WHAT_WE_DID.md
+commands.md

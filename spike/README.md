@@ -6,8 +6,14 @@ Goal: answer three questions before writing the real adapter.
 2. Which KPIs does Scylla report directly, and which must we recompute?
 3. **How long does one simulation take?** ← the number that decides the schedule
 
-This is throwaway code. It hard-codes the pooling strategy, skips validation,
-and ignores replication. The real adapter replaces it.
+The exploratory code here is superseded by the real adapter in
+`backend/src/simulation_pipeline/simulation/scylla/` -- it hard-codes the
+pooling strategy, skips validation, and ignores replication.
+
+**The folder itself is not disposable.** `scylla.jar` and `libs/` live here and
+are what every Scylla run loads: `resolve_jar()` falls back to `spike/scylla.jar`
+when `SCYLLA_JAR` is unset, and the jar's manifest uses a relative `Class-Path`,
+so the two must stay side by side.
 
 ## Status (2026-08-28)
 

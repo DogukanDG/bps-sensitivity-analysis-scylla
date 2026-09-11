@@ -1,7 +1,7 @@
 From db0a5671b674aa863453de66e81c8692c0cd2423 Mon Sep 17 00:00:00 2001
 From: DogukanDG <dagtekindogukan1@gmail.com>
 Date: Mon, 7 Sep 2026 13:06:54 +0200
-Subject: [PATCH] Let the event log be switched off at run time
+Subject: [PATCH 5/7] Let the event log be switched off at run time
 
 The XES log is the largest thing a run writes: 16 MB of the 23 MB a 3000-case
 BPIC 2012 simulation produces, against 7 MB for the statistics a KPI pipeline

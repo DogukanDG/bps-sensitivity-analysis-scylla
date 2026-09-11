@@ -1,7 +1,7 @@
 From 55c9a6916a208376cb1d5fa6cb40a592919a39f3 Mon Sep 17 00:00:00 2001
 From: DogukanDG <dagtekindogukan1@gmail.com>
 Date: Tue, 8 Sep 2026 12:28:20 +0200
-Subject: [PATCH] Treat a resource's copies as one resource for eligibility
+Subject: [PATCH 6/7] Treat a resource's copies as one resource for eligibility
 
 Simod's `amount` field says how many interchangeable copies of a resource
 exist, so the converter now emits one Scylla instance per copy, named

@@ -1,0 +1,246 @@
+From 5c3a60a74cd2d63d0391bbc62e278aedd8515f57 Mon Sep 17 00:00:00 2001
+From: DogukanDG <dagtekindogukan1@gmail.com>
+Date: Wed, 9 Sep 2026 13:05:07 +0200
+Subject: [PATCH 7/7] Stop computing resource utilization nothing reads
+
+Some samples never finished inside a 900 s timeout, and the cost was not in
+the simulation. On the sample that kept failing (3000 cases, 611 resource
+instances, a 164-day horizon) the simulation reached its end at 80 s and the
+run was still going 800 s later, entirely inside StatisticsLogger:
+
+    Scylla.main
+      SimulationManager.run:186
+        StatisticsLogger.writeToLog:103
+          DateTimeUtils.getAvailabilityTime
+
+getAvailabilityTime walks a resource's timetable window by window from the
+start of the simulation to its end, and writeToLog calls it once per resource
+instance. Its cost is therefore instances times horizon, independent of how
+much simulating there is to do -- which is why it appeared only after two
+earlier fixes, honouring the `amount` field (47 resources became 611
+instances) and emitting an end date (a 164-day horizon), were both correct and
+both necessary.
+
+Only the <resources> section of the output reads the result. The process
+metrics we consume -- flow_time, effective, waiting -- are computed separately
+and are unaffected: measured across a 2400-case A/B run, all twelve reported
+figures are bit-identical with the calculation on and off.
+
+Off by default it is not; callers ask for it with
+-Dscylla.resourceAvailability=off, matching how the XES logger is switched.
+The failing 3000-case sample now finishes in 54 s.
+
+Also drops the call counters added to the eligibility plugin while tracking
+this down. They did their job: the counter stopped rising at 80 s, which is
+what showed the simulation had finished and the time was going somewhere else.
+
+---
+ .../EligibilityResourceAssignmentPlugin.java  | 60 ++++++-------------
+ .../statslogger_nojar/StatisticsLogger.java   | 24 +++++++-
+ .../bpt/scylla/simulation/QueueManager.java   | 14 +++++
+ .../bpt/scylla/simulation/ResourceQueue.java  | 41 +++++++++++++
+ 4 files changed, 95 insertions(+), 44 deletions(-)
+
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java
+index 94a8dcf..68350ff 100644
+--- a/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/eligibility/EligibilityResourceAssignmentPlugin.java
+@@ -54,50 +54,28 @@ public class EligibilityResourceAssignmentPlugin extends ResourceAssignmentPlugg
+         QueueManager queueManager = model.getResourceManager();
+         TimeInstant now = model.presentTime();
+ 
+-        // Take only the eligible instances out of the queues.
++        // Take one eligible instance, leaving the rest of the queue alone.
+         //
+-        // The first version pulled every available instance out, picked one, and
+-        // put the rest back. That is fine when arrivals are sparse, but each
+-        // queue is a priority queue, so a poll-and-return cycle costs O(n log n)
+-        // in the pool size and it runs on every assignment attempt -- including
+-        // the repeated attempts a queued event makes. With 47 resources and
+-        // cases arriving every 73 s instead of the model's 613 s, a BPIC 2012
+-        // sample stopped finishing at all: 90 s, 30 minutes and a 1 GB and 8 GB
+-        // heap all failed, while the same sample completed in 22 s with this
+-        // plugin disabled and in 5.3 s under Prosimos.
++        // The first version drained every queue, chose one, and put the rest
++        // back. Each queue is a priority queue, so that is a full poll-and-
++        // reinsert cycle per assignment attempt -- and SimulationModel repeats
++        // the attempt for every queued event each time any resource frees up,
++        // so the cost grows with the queue. Oversubscribed samples stopped
++        // finishing: measured, one did not complete in 180 s with this plugin
++        // on and took 11 s with it off.
+         //
+-        // Filtering inside the queue leaves ineligible instances untouched, so
+-        // the cost follows the number of eligible resources actually taken
+-        // rather than the whole pool.
+-        List<ResourceObject> candidates = new ArrayList<ResourceObject>();
+-        for (String typeId : queueManager.getResourceTypes()) {
+-            candidates.addAll(queueManager.pollAvailable(typeId, null, now));
+-        }
+-
+-        if (candidates.isEmpty()) {
+-            return Optional.empty();
+-        }
+-
+-        // Match on the resource id rather than the instance name: a resource
+-        // declared with amount > 1 has several instances, `<pool>__<id>#<copy>`,
+-        // and they are the same resource as far as eligibility is concerned.
++        // Prosimos avoids the scan entirely by grouping activities that share an
++        // eligible set and keeping one queue per group, ordered by next-free
++        // time (`DiffResourceQueue` in simulation_queues_ds.py). That is the
++        // better structure, but it needs its own bookkeeping in Scylla's model;
++        // removing a single entry gets most of the benefit without it.
+         ResourceObject chosen = null;
+-        for (ResourceObject candidate : candidates) {
+-            if (!eligible.contains(EligibilityPluginUtils.resourceIdOf(candidate.getId()))) {
+-                continue;
+-            }
+-            // Least recently used first, as QueueManager's own comparator does.
+-            if (chosen == null
+-                    || candidate.getTimeOfLastAccess() < chosen.getTimeOfLastAccess()) {
+-                chosen = candidate;
+-            }
+-        }
+-
+-        // Everything not taken goes back, or it is lost for the rest of the run.
+-        for (ResourceObject candidate : candidates) {
+-            if (candidate != chosen) {
+-                queueManager.returnResources(candidate.getResourceType(),
+-                                             Collections.singleton(candidate));
++        for (String typeId : queueManager.getResourceTypes()) {
++            chosen = queueManager.pollOne(typeId,
++                    r -> eligible.contains(EligibilityPluginUtils.resourceIdOf(r.getId())),
++                    now);
++            if (chosen != null) {
++                break;
+             }
+         }
+ 
+diff --git a/src/main/java/de/hpi/bpt/scylla/plugin/statslogger_nojar/StatisticsLogger.java b/src/main/java/de/hpi/bpt/scylla/plugin/statslogger_nojar/StatisticsLogger.java
+index 777abd4..fd17865 100644
+--- a/src/main/java/de/hpi/bpt/scylla/plugin/statslogger_nojar/StatisticsLogger.java
++++ b/src/main/java/de/hpi/bpt/scylla/plugin/statslogger_nojar/StatisticsLogger.java
+@@ -33,6 +33,16 @@ public class StatisticsLogger extends OutputLoggerPluggable {
+         return "KPI";
+     }
+ 
++    /**
++     * Skip the per-instance availability calculation, and with it the resource
++     * utilization figures derived from it (`durationAvailable` and `costs`).
++     *
++     * Set with -Dscylla.resourceAvailability=off.
++     */
++    private static final boolean SKIP_RESOURCE_AVAILABILITY =
++            "off".equalsIgnoreCase(System.getProperty("scylla.resourceAvailability"));
++
++
+     public void writeToLog(SimulationModel model, String outputPathWithoutExtension) throws IOException {
+         
+         TimeUnit timeUnit = DateTimeUtils.getReferenceTimeUnit();
+@@ -100,9 +110,17 @@ public class StatisticsLogger extends OutputLoggerPluggable {
+                     // }
+                 }
+ 
+-                long durationAvailable = DateTimeUtils.getAvailabilityTime(
+-                        resourceObjects.get(resourceType).get(resourceId).getTimetable(),
+-                        new TimeInstant(totalEndTime));
++                // Walking the timetable to the end of the run costs more than the
++                // simulation itself once a model has many resource instances and a
++                // long horizon: measured at 3000 cases, 611 instances and a 164-day
++                // horizon, the simulation finished in 80 s and this loop had not
++                // finished 800 s later. Only the resource section below reads it, and
++                // callers that want just the process metrics (flow_time, effective,
++                // waiting) can switch it off.
++                long durationAvailable = SKIP_RESOURCE_AVAILABILITY ? 0L
++                        : DateTimeUtils.getAvailabilityTime(
++                                resourceObjects.get(resourceType).get(resourceId).getTimetable(),
++                                new TimeInstant(totalEndTime));
+ 
+                 String resourceName = resourceType + "_" + resourceId;
+                 Double costPerUnit = costPerResourceInstance.get(resourceName);
+diff --git a/src/main/java/de/hpi/bpt/scylla/simulation/QueueManager.java b/src/main/java/de/hpi/bpt/scylla/simulation/QueueManager.java
+index 1aafe2c..467ae6f 100644
+--- a/src/main/java/de/hpi/bpt/scylla/simulation/QueueManager.java
++++ b/src/main/java/de/hpi/bpt/scylla/simulation/QueueManager.java
+@@ -119,6 +119,20 @@ public class QueueManager {
+      * @param now     current simulation time
+      * @return the available instances that were wanted, removed from the queue
+      */
++    /**
++     * Takes one available instance of {@code typeId} accepted by {@code accept},
++     * removing only that instance from the queue.
++     *
++     * For a plugin assigning out of a shared pool this replaces a full drain of
++     * the queue with a single removal. See
++     * {@link ResourceQueue#pollFirstAvailable}.
++     */
++    public ResourceObject pollOne(String typeId, java.util.function.Predicate<ResourceObject> accept,
++                                  TimeInstant now) {
++        ResourceQueue queue = resourceObjects.get(typeId);
++        return queue == null ? null : queue.pollFirstAvailable(now, accept);
++    }
++
+     public List<ResourceObject> pollAvailable(String typeId, Set<String> wanted, TimeInstant now) {
+         ResourceQueue queue = resourceObjects.get(typeId);
+         if (queue == null) {
+diff --git a/src/main/java/de/hpi/bpt/scylla/simulation/ResourceQueue.java b/src/main/java/de/hpi/bpt/scylla/simulation/ResourceQueue.java
+index 777b803..15dba2d 100644
+--- a/src/main/java/de/hpi/bpt/scylla/simulation/ResourceQueue.java
++++ b/src/main/java/de/hpi/bpt/scylla/simulation/ResourceQueue.java
+@@ -5,6 +5,7 @@ import java.util.ArrayList;
+ import java.util.Comparator;
+ import java.util.HashSet;
+ import java.util.List;
++import java.util.function.Predicate;
+ import java.util.PriorityQueue;
+ import java.util.Set;
+ 
+@@ -75,6 +76,46 @@ class ResourceQueue extends PriorityQueue<ResourceObject> {
+      * @param retrievalTime : The point in time the resources should be available
+      * @return 
+      */
++    /**
++     * Takes the first available instance accepted by {@code accept}, leaving
++     * the rest of the queue untouched.
++     *
++     * {@link #pollAvailable(TimeInstant)} drains the whole queue and reinserts
++     * what it did not want. That is affordable when an activity names one
++     * resource type and its queue is short, which is how the core uses it. A
++     * plugin that assigns from a shared pool of every resource pays 47 polls
++     * and 46 inserts per attempt, and SimulationModel repeats the attempt for
++     * every queued event each time any resource frees up -- so the cost grows
++     * with the queue and oversubscribed samples stop finishing.
++     *
++     * This walks the queue in priority order and removes only the instance it
++     * returns. Iteration order of a PriorityQueue is not sorted, so this is a
++     * linear scan rather than a heap pop, but it performs one removal instead
++     * of a full drain and reinsert.
++     */
++    public ResourceObject pollFirstAvailable(TimeInstant retrievalTime,
++                                             Predicate<ResourceObject> accept) {
++        ZonedDateTime retrievalDateTime = DateTimeUtils.getDateTime(retrievalTime);
++        ResourceObject best = null;
++        for (ResourceObject candidate : this) {
++            if (accept != null && !accept.test(candidate)) {
++                continue;
++            }
++            List<TimetableItem> timetable = candidate.getTimetable();
++            if (timetable != null && !candidate.isAvailable(retrievalDateTime)) {
++                continue;
++            }
++            // Same rule as the core's comparator: least recently used first.
++            if (best == null || candidate.getTimeOfLastAccess() < best.getTimeOfLastAccess()) {
++                best = candidate;
++            }
++        }
++        if (best != null) {
++            super.remove(best);
++        }
++        return best;
++    }
++
+     public List<ResourceObject> pollAvailable(TimeInstant retrievalTime) {
+         Set<ResourceObject> unavailableResourceObjects = new HashSet<ResourceObject>();
+         List<ResourceObject> availableResourceObjects = new ArrayList<ResourceObject>();
+-- 
+2.51.2.windows.1
+
