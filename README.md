@@ -534,18 +534,50 @@ the sensitivity indices are written as
 
 #### On the cluster
 
-```bash
-# one-time: copy the jar and its libs together
-scp -r spike/scylla.jar spike/libs user@cluster.ginkgo-project.de:~/scylla/
+**Once**, copy the jar and its libraries together — the manifest's `Class-Path`
+is relative, so they must stay side by side:
 
-# then, on the cluster
-cd server_computing/slurm
-mkdir -p logs
+```bash
+scp -r spike/scylla.jar spike/libs user@cluster.ginkgo-project.de:~/scylla/
+```
+
+**Then, on the cluster**, check one sample runs before queueing anything:
+
+```bash
+conda activate bps                 # the job script does this itself; an
+                                   # interactive shell does not, and without it
+                                   # the import of pandas fails
+cd ~/bps_clean/backend
+export SCYLLA_JAR=~/scylla/scylla.jar
+python run_experiments.py --dataset bpic2012 --engine scylla --smoke
+```
+
+**Submit.** Run numbers come from `--list`, and `--array` takes the range you
+want from it:
+
+```bash
+cd ~/bps_clean/backend
+python run_experiments.py --dataset bpic2012 --engine scylla --list   # 0..50
+
+cd ../server_computing/slurm
+mkdir -p logs                      # Slurm opens the log before the script runs,
+                                   # so a missing directory fails with no log
 DATASET=bpic2012 sbatch --array=0-11%2 run_array_scylla.sh
 ```
 
-`run_array_scylla.sh` carries the Java and sizing setup. `%2` throttles to two
-concurrent array tasks, which is polite on a shared cluster.
+`0-11` is phase 1, the twelve Morris runs. `%2` throttles to two concurrent
+array tasks, which is polite on a shared cluster.
+
+**Watch it.** The log names the node, the worker count, and each finished chunk:
+
+```bash
+squeue -u $USER
+grep "\[scylla\]" logs/bps-scylla_<jobid>_0.out    # "28 worker(s): 32 core(s)..."
+grep -c "Finished chunk" logs/bps-scylla_<jobid>_0.out
+```
+
+`server_computing/slurm/README_scylla.md` has the rest: how the worker count is
+derived, measured wall times, and what the recorded failures mean.
 
 Two environment variables the script honours: `SCYLLA_JAR` (jar location) and
 `SCYLLA_NJOBS` (worker count, overriding the automatic sizing).
